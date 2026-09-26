@@ -1,3 +1,5 @@
+mod crypto;
+
 use std::collections::HashMap;
 use std::env;
 use std::io::{Read, Write};
@@ -6,6 +8,8 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+use crypto::XorCipher;
 
 const BUF_SIZE: usize = 8192;
 const TICK_MS: u64 = 100;
@@ -31,19 +35,21 @@ fn main() {
     if args.len() >= 2 && (args[1] == "-h" || args[1] == "--help") {
         eprintln!("rtragent - lightweight router agent");
         eprintln!();
-        eprintln!("USAGE: rtragent --server <addr> [--token <token>] [--name <name>] [--id <id>]");
+        eprintln!("USAGE: rtragent --server <addr> [--token <token>] [--name <name>] [--id <id>] [--crypto-key <key>]");
         eprintln!();
         eprintln!("OPTIONS:");
-        eprintln!("  -s, --server <addr>   Server address (default: 127.0.0.1:9527)");
-        eprintln!("  -t, --token <token>   Auth token (optional)");
-        eprintln!("  -n, --name <name>     Agent display name (default: router)");
-        eprintln!("  -i, --id <id>         Unique device ID. Server uses it to");
-        eprintln!("                        identify this agent across reconnections.");
-        eprintln!("                        If not set, server generates one.");
-        eprintln!("  -h, --help            Print this help");
+        eprintln!("  -s, --server <addr>     Server address (default: 127.0.0.1:9527)");
+        eprintln!("  -t, --token <token>     Auth token (optional)");
+        eprintln!("  -n, --name <name>       Agent display name (default: router)");
+        eprintln!("  -i, --id <id>           Unique device ID. Server uses it to");
+        eprintln!("                           identify this agent across reconnections.");
+        eprintln!("                           If not set, server generates one.");
+        eprintln!("  -k, --crypto-key <key>  XOR encryption key (must match server).");
+        eprintln!("                           Empty = disabled (default).");
+        eprintln!("  -h, --help              Print this help");
         eprintln!();
         eprintln!("EXAMPLE:");
-        eprintln!("    rtragent --server 1.2.3.4:9527 --token mysecret --name my-router --id AA:BB:CC:DD:EE:FF");
+        eprintln!("    rtragent --server 1.2.3.4:9527 --token mysecret --name my-router --id AA:BB:CC:DD:EE:FF --crypto-key MyKey123");
         return;
     }
 
@@ -59,6 +65,14 @@ fn main() {
     let id = parse_arg(&args, "--id")
         .or_else(|| parse_arg(&args, "-i"))
         .unwrap_or_default();
+    let crypto_key = parse_arg(&args, "--crypto-key")
+        .or_else(|| parse_arg(&args, "-k"))
+        .unwrap_or_default();
+
+    let cipher = XorCipher::new(&crypto_key);
+    if cipher.is_enabled() {
+        eprintln!("[rtragent] XOR encryption enabled");
+    }
 
     loop {
         eprintln!("[rtragent] connecting to {} as {}", server, name);
@@ -72,7 +86,10 @@ fn main() {
                 } else {
                     format!("HELLO {} {} {}\n", name, id, token)
                 };
-                if s.write_all(hello.as_bytes()).is_err() {
+                // Encrypt the HELLO message
+                let mut hello_bytes = hello.into_bytes();
+                cipher.encrypt(&mut hello_bytes);
+                if s.write_all(&hello_bytes).is_err() {
                     thread::sleep(Duration::from_secs(3));
                     continue;
                 }
@@ -80,7 +97,7 @@ fn main() {
 
                 let tunnels = Arc::new(Mutex::new(HashMap::<String, TunnelState>::new()));
 
-                if let Err(e) = run_session(&mut s, tunnels.clone()) {
+                if let Err(e) = run_session(&mut s, tunnels.clone(), &cipher) {
                     eprintln!("[rtragent] session error: {}", e);
                 }
             }
@@ -92,9 +109,17 @@ fn main() {
     }
 }
 
+/// XOR-encrypt a byte slice and write it to the stream.
+fn xor_write(stream: &mut TcpStream, data: &[u8], cipher: &XorCipher) {
+    let mut encrypted = data.to_vec();
+    cipher.encrypt(&mut encrypted);
+    let _ = stream.write_all(&encrypted);
+}
+
 fn run_session(
     stream: &mut TcpStream,
     tunnels: Arc<Mutex<HashMap<String, TunnelState>>>,
+    cipher: &XorCipher,
 ) -> Result<(), String> {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(TICK_MS)));
     let mut buf: Vec<u8> = Vec::with_capacity(BUF_SIZE);
@@ -108,6 +133,8 @@ fn run_session(
                 return Ok(());
             }
             Ok(n) => {
+                // Decrypt the chunk before appending to buffer
+                cipher.decrypt(&mut tmp[..n]);
                 buf.extend_from_slice(&tmp[..n]);
             }
             Err(e) => {
@@ -115,11 +142,11 @@ fn run_session(
                     || e.kind() == std::io::ErrorKind::TimedOut
                 {
                     if last_ping.elapsed() > Duration::from_secs(20) {
-                        let _ = stream.write_all(b"PING\n");
+                        xor_write(stream, b"PING\n", cipher);
                         let _ = stream.flush();
                         last_ping = std::time::Instant::now();
                     }
-                    flush_tunnels(stream, &tunnels);
+                    flush_tunnels(stream, &tunnels, cipher);
                     continue;
                 }
                 return Err(format!("read error: {}", e));
@@ -141,7 +168,7 @@ fn run_session(
                     let parts: Vec<&str> = line_str.splitn(4, ' ').collect();
                     match parts.first().map(|s| *s) {
                         Some("PING") => {
-                            let _ = stream.write_all(b"PONG\n");
+                            xor_write(stream, b"PONG\n", cipher);
                             let _ = stream.flush();
                         }
                         Some("PONG") => {
@@ -152,9 +179,9 @@ fn run_session(
                                 let cmd = parts[2];
                                 let (code, out) = run_cmd(cmd);
                                 let header = format!("EXEC_RESULT {} {}\n", op_id, code);
-                                let _ = stream.write_all(header.as_bytes());
-                                let _ = stream.write_all(out.as_bytes());
-                                let _ = stream.write_all(b"\n.END\n");
+                                xor_write(stream, header.as_bytes(), cipher);
+                                xor_write(stream, out.as_bytes(), cipher);
+                                xor_write(stream, b"\n.END\n", cipher);
                                 let _ = stream.flush();
                             }
                         }
@@ -176,8 +203,11 @@ fn run_session(
                                             tunnel_id.clone(),
                                             TunnelState { local_stream: local },
                                         );
-                                        let _ = stream
-                                            .write_all(format!("TUN_OK {}\n", tunnel_id).as_bytes());
+                                        xor_write(
+                                            stream,
+                                            format!("TUN_OK {}\n", tunnel_id).as_bytes(),
+                                            cipher,
+                                        );
                                         let _ = stream.flush();
                                     }
                                     Err(e) => {
@@ -185,8 +215,10 @@ fn run_session(
                                             "[rtragent] tunnel {} connect {} failed: {}",
                                             tunnel_id, local_addr, e
                                         );
-                                        let _ = stream.write_all(
+                                        xor_write(
+                                            stream,
                                             format!("TUN_CLOSE {}\n", tunnel_id).as_bytes(),
+                                            cipher,
                                         );
                                         let _ = stream.flush();
                                     }
@@ -203,7 +235,10 @@ fn run_session(
                                             .set_read_timeout(Some(Duration::from_secs(5)));
                                         match stream.read(&mut tmp) {
                                             Ok(0) => return Ok(()),
-                                            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                                            Ok(n) => {
+                                                cipher.decrypt(&mut tmp[..n]);
+                                                buf.extend_from_slice(&tmp[..n]);
+                                            }
                                             Err(_) => {
                                                 let _ = stream.set_read_timeout(Some(
                                                     Duration::from_millis(TICK_MS),
@@ -241,13 +276,14 @@ fn run_session(
             }
         }
 
-        flush_tunnels(stream, &tunnels);
+        flush_tunnels(stream, &tunnels, cipher);
     }
 }
 
 fn flush_tunnels(
     stream: &mut TcpStream,
     tunnels: &Arc<Mutex<HashMap<String, TunnelState>>>,
+    cipher: &XorCipher,
 ) {
     let mut to_send: Vec<(String, Vec<u8>)> = Vec::new();
     let mut to_close: Vec<String> = Vec::new();
@@ -278,11 +314,13 @@ fn flush_tunnels(
     for (tid, data) in to_send {
         let mut frame = format!("TUN_DATA {} {}\n", tid, data.len()).into_bytes();
         frame.extend_from_slice(&data);
-        let _ = stream.write_all(&frame);
+        // Encrypt the entire frame (header + binary data)
+        xor_write(stream, &frame, cipher);
     }
 
     for tid in to_close {
-        let _ = stream.write_all(format!("TUN_CLOSE {}\n", tid).as_bytes());
+        let close_msg = format!("TUN_CLOSE {}\n", tid);
+        xor_write(stream, close_msg.as_bytes(), cipher);
         let mut tmap = tunnels.lock().unwrap();
         tmap.remove(&tid);
     }

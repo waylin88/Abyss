@@ -8,6 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+use crate::crypto::XorCipher;
 use crate::ip_lookup::IpLookup;
 
 /// Ban an IP after this many failed handshakes within `BAN_WINDOW`.
@@ -470,7 +471,7 @@ pub struct AgentInfo {
     pub ip_location: String,
 }
 
-async fn read_line(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<String> {
+async fn read_line(stream: &mut TcpStream, buf: &mut Vec<u8>, cipher: Option<&XorCipher>) -> anyhow::Result<String> {
     let mut tmp = [0u8; 1024];
     loop {
         if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
@@ -485,10 +486,28 @@ async fn read_line(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<
         }
         match stream.read(&mut tmp).await {
             Ok(0) => anyhow::bail!("connection closed"),
-            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Ok(n) => {
+                // Decrypt the chunk before appending
+                if let Some(c) = cipher {
+                    c.decrypt(&mut tmp[..n]);
+                }
+                buf.extend_from_slice(&tmp[..n]);
+            }
             Err(e) => anyhow::bail!("read error: {}", e),
         }
     }
+}
+
+/// Write data to socket with optional XOR encryption.
+async fn xor_write(socket: &mut TcpStream, data: &[u8], cipher: Option<&XorCipher>) -> anyhow::Result<()> {
+    if let Some(c) = cipher {
+        let mut encrypted = data.to_vec();
+        c.encrypt(&mut encrypted);
+        socket.write_all(&encrypted).await?;
+    } else {
+        socket.write_all(data).await?;
+    }
+    Ok(())
 }
 
 pub async fn run_agent_listener(
@@ -496,6 +515,7 @@ pub async fn run_agent_listener(
     addr: &str,
     allow_tokens: Vec<String>,
     block_tokens: Vec<String>,
+    crypto_key: String,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     println!("[server] agent listener ready on {}", addr);
@@ -514,8 +534,9 @@ pub async fn run_agent_listener(
         let mgr = manager.clone();
         let allow = allow_tokens.clone();
         let block = block_tokens.clone();
+        let key = crypto_key.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_agent(mgr, socket, peer, &allow, &block).await {
+            if let Err(e) = handle_agent(mgr, socket, peer, &allow, &block, &key).await {
                 eprintln!("[server] agent session error ({}): {}", peer, e);
             }
         });
@@ -528,30 +549,31 @@ async fn handle_agent(
     peer: SocketAddr,
     allow_tokens: &[String],
     block_tokens: &[String],
+    crypto_key: &str,
 ) -> anyhow::Result<()> {
+    let cipher = XorCipher::new(crypto_key);
+    // Use Option<&XorCipher> for readability
+    let c_opt: Option<&XorCipher> = if cipher.is_enabled() { Some(&cipher) } else { None };
     let peer_ip = peer.ip().to_string();
 
     // ── IP ban check ──────────────────────────────────────────────
     if manager.is_ip_banned(&peer_ip).await {
-        // Silently drop — don't even respond
         return Ok(());
     }
 
-    // Enable aggressive TCP keepalive for fast dead-connection detection
     set_tcp_keepalive(&socket);
 
     // ── Handshake with timeout ────────────────────────────────────
     let mut hello_buf: Vec<u8> = Vec::with_capacity(256);
     let line = tokio::time::timeout(
         Duration::from_secs(HANDSHAKE_TIMEOUT_SECS),
-        read_line(&mut socket, &mut hello_buf),
+        read_line(&mut socket, &mut hello_buf, c_opt),
     )
     .await
     .map_err(|_| anyhow::anyhow!("handshake timeout"))??;
 
     let parts: Vec<&str> = line.trim().splitn(4, ' ').collect();
     if parts.len() < 2 || parts[0] != "HELLO" {
-        // Record failure and auto-ban if threshold reached
         if manager.record_handshake_failure(&peer_ip).await {
             manager.ban_ip(&peer_ip).await;
         } else {
@@ -565,12 +587,9 @@ async fn handle_agent(
     }
     let name = parts[1].to_string();
 
-    // New protocol: HELLO <name> <id> <token>
-    // Old protocol: HELLO <name> <token>
     let (agent_id, provided_token) = if parts.len() >= 4 {
         (parts[2].to_string(), parts[3])
     } else {
-        // backward compat: use name as fallback id
         (name.clone(), if parts.len() > 2 { parts[2] } else { "" })
     };
 
@@ -580,7 +599,7 @@ async fn handle_agent(
             "[server] agent {} rejected: token {:?} not in allow list (from {})",
             name, provided_token, peer
         );
-        let _ = socket.write_all(b"REJECT token not allowed\n").await;
+        let _ = xor_write(&mut socket, b"REJECT token not allowed\n", c_opt).await;
         return Ok(());
     }
     if !block_tokens.is_empty() && block_tokens.contains(&provided_token.to_string()) {
@@ -588,12 +607,10 @@ async fn handle_agent(
             "[server] agent {} rejected: token {:?} is blocked (from {})",
             name, provided_token, peer
         );
-        let _ = socket.write_all(b"REJECT token blocked\n").await;
+        let _ = xor_write(&mut socket, b"REJECT token blocked\n", c_opt).await;
         return Ok(());
     }
 
-    // Qualified ID = "{provided_token}:{agent_id}" ensures isolation across groups.
-    // When token is empty, qualified_id = "{agent_id}" for backward compat.
     let qualified_id = AgentManager::qualified_id(&provided_token, &agent_id);
 
     if manager
@@ -638,8 +655,12 @@ async fn handle_agent(
         )
         .await;
 
+    // ── Wrap writer task with optional XOR encryption ────────────
+    let cipher_arc = Arc::new(cipher);
+    let wc = cipher_arc.clone();
     let write_task = tokio::spawn(async move {
-        while let Some(data) = rx.recv().await {
+        while let Some(mut data) = rx.recv().await {
+            wc.encrypt(&mut data);
             if writer.write_all(&data).await.is_err() {
                 break;
             }
@@ -650,6 +671,7 @@ async fn handle_agent(
     let read_mgr = manager.clone();
     let read_agent_id = qualified_id.clone();
     let read_token = provided_token;
+    let rc = cipher_arc.clone();
     let read_task = tokio::spawn(async move {
         let mut reader = reader;
         let mut buf: Vec<u8> = Vec::with_capacity(4096);
@@ -688,7 +710,10 @@ async fn handle_agent(
                     result = reader.read(&mut tmp) => {
                         match result {
                             Ok(0) => return,
-                            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                            Ok(n) => {
+                                rc.decrypt(&mut tmp[..n]);
+                                buf.extend_from_slice(&tmp[..n]);
+                            }
                             Err(e) => {
                                 eprintln!("[server] {} read error: {}", read_agent_id, e);
                                 return;
@@ -754,7 +779,10 @@ async fn handle_agent(
                                 }
                                 None => match reader.read(&mut tmp).await {
                                     Ok(0) => break,
-                                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                                    Ok(n) => {
+                                        rc.decrypt(&mut tmp[..n]);
+                                        buf.extend_from_slice(&tmp[..n]);
+                                    }
                                     Err(_) => break,
                                 },
                             }
@@ -777,7 +805,10 @@ async fn handle_agent(
                             while buf.len() < data_len {
                                 match reader.read(&mut tmp).await {
                                     Ok(0) => break,
-                                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                                    Ok(n) => {
+                                        rc.decrypt(&mut tmp[..n]);
+                                        buf.extend_from_slice(&tmp[..n]);
+                                    }
                                     Err(_) => break,
                                 }
                             }
