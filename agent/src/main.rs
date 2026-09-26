@@ -32,6 +32,7 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn hide_args(argv0: &str) {
+    eprintln!("[hide_args] start, argv0='{}'", argv0);
     let maps = match std::fs::read_to_string("/proc/self/maps") {
         Ok(s) => s,
         Err(e) => {
@@ -39,6 +40,7 @@ fn hide_args(argv0: &str) {
             return;
         }
     };
+    eprintln!("[hide_args] maps read ok, {} lines", maps.lines().count());
 
     let marker = argv0.as_bytes();
     if marker.is_empty() {
@@ -46,7 +48,9 @@ fn hide_args(argv0: &str) {
         return;
     }
 
+    let mut seg_count = 0u32;
     for line in maps.lines() {
+        seg_count += 1;
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 5 {
             continue;
@@ -75,14 +79,21 @@ fn hide_args(argv0: &str) {
             continue;
         }
 
+        eprintln!(
+            "[hide_args] seg {}: 0x{:x}-0x{:x} len={} perms={}",
+            seg_count, seg_start, seg_end, seg_len, perms
+        );
+
         let seg = unsafe { std::slice::from_raw_parts(seg_start as *const u8, seg_len) };
 
+        eprintln!("[hide_args] about to search seg {}", seg_count);
         let mut pos = 0usize;
-        while pos + marker.len() < seg.len() {
+        'outer: while pos + marker.len() < seg.len() {
             if &seg[pos..pos + marker.len()] == marker
                 && pos + marker.len() < seg.len()
                 && seg[pos + marker.len()] == 0
             {
+                eprintln!("[hide_args] candidate at pos {} in seg {}", pos, seg_count);
                 let arg_start = seg_start + pos;
                 let mut total = marker.len() + 1;
                 let mut scan = pos + marker.len() + 1;
@@ -90,7 +101,7 @@ fn hide_args(argv0: &str) {
                     if seg[scan] == 0 {
                         if scan + 1 < seg.len() && seg[scan + 1] == 0 {
                             total += 1;
-                            break;
+                            break 'outer;
                         }
                         total += 1;
                         scan += 1;
@@ -100,12 +111,16 @@ fn hide_args(argv0: &str) {
                     scan += 1;
                 }
                 if arg_start + total > seg_end || total == 0 {
+                    eprintln!(
+                        "[hide_args] reject: 0x{:x}+{} vs seg_end=0x{:x}",
+                        arg_start, total, seg_end
+                    );
                     pos += 1;
                     continue;
                 }
 
                 eprintln!(
-                    "[hide_args] found argv at 0x{:x} ({} bytes)",
+                    "[hide_args] found argv at 0x{:x} ({} bytes), about to wipe",
                     arg_start, total
                 );
 
@@ -134,6 +149,7 @@ fn hide_args(argv0: &str) {
             }
             pos += 1;
         }
+        eprintln!("[hide_args] seg {} searched, no match", seg_count);
     }
     eprintln!("[hide_args] marker '{}' not found", argv0);
 }
