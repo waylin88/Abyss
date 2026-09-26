@@ -47,7 +47,9 @@ jobs:
 
       - name: Install Rust (cross host)
         if: matrix.cross == true
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
 
       - name: Install cross
         if: matrix.cross == true
@@ -59,7 +61,7 @@ jobs:
 
       - name: Build (cross)
         if: matrix.cross == true
-        run: cross build --release -p ${{ matrix.binary }} --target ${{ matrix.target }}
+        run: cross build --release -p ${{ matrix.binary }} --target ${{ matrix.target }} -Zbuild-std=std,core,alloc
 
       - name: Strip & Rename
         run: |
