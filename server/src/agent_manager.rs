@@ -301,6 +301,31 @@ impl AgentManager {
             .unwrap_or(false)
     }
 
+    /// Find an agent by the raw ID (the `provided_id` from the agent).
+    /// Searches across all tokens. Returns (token, qualified_id, handle).
+    /// Matches if qualified_id ends with `:{id}` or equals `id`.
+    pub async fn find_agent_by_id(
+        &self,
+        id: &str,
+    ) -> Option<(String, String, AgentHandle)> {
+        let agents = self.agents.lock().await;
+        for (token, group) in agents.iter() {
+            for (k, v) in group.iter() {
+                // Match: qualified_id == id (no token) or qualified_id ends with :{id} (has token)
+                let suffix = format!(":{}", id);
+                if *k == id || k.ends_with(&suffix) {
+                    return Some((token.clone(), k.clone(), AgentHandle {
+                        name: v.name.clone(),
+                        addr: v.addr,
+                        connected_at: v.connected_at,
+                        tx: v.tx.clone(),
+                    }));
+                }
+            }
+        }
+        None
+    }
+
     /// Manually ping an agent to check if it's alive.
     /// Returns `true` if agent responded with PONG within 30 seconds.
     pub async fn ping_agent(&self, agent_id: &str) -> bool {
@@ -787,4 +812,176 @@ async fn pipe_user_to_agent(
             ));
         }
     }
+}
+
+/// Start an HTTP reverse proxy that routes by Host header.
+///
+/// When a request arrives with `Host: <agent_id>.<domain>:<port>`, the proxy
+/// extracts `<agent_id>`, looks up the online agent, and forwards the entire
+/// HTTP request to the agent's local port 80 via the existing tunnel mechanism.
+///
+/// # Arguments
+/// * `manager` - The agent manager
+/// * `http_proxy_port` - The local port to listen on (e.g., 80, 8080)
+/// * `domain` - The domain suffix to strip from Host headers (e.g., "dome.com")
+///   If empty, the entire Host value before the port is treated as the agent ID.
+pub async fn start_http_proxy(
+    manager: Arc<AgentManager>,
+    http_proxy_port: u16,
+    domain: &str,
+) -> anyhow::Result<()> {
+    let addr = format!("0.0.0.0:{}", http_proxy_port);
+    let listener = TcpListener::bind(&addr).await?;
+    println!(
+        "[server] HTTP proxy listening on {} (domain: {})",
+        addr,
+        if domain.is_empty() { "(any)" } else { domain }
+    );
+
+    loop {
+        let (client, peer) = listener.accept().await?;
+        let mgr = manager.clone();
+        let domain_owned = domain.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = handle_http_proxy(mgr, client, &domain_owned).await {
+                eprintln!("[server] HTTP proxy error ({}): {}", peer, e);
+            }
+        });
+    }
+}
+
+async fn handle_http_proxy(
+    mgr: Arc<AgentManager>,
+    mut client: TcpStream,
+    domain: &str,
+) -> anyhow::Result<()> {
+    let _ = client.set_nodelay(true);
+
+    // ── Read HTTP request headers (up to \r\n\r\n) ────────────────
+    let mut buf = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 1024];
+    let mut header_end = None;
+
+    loop {
+        let n = client.read(&mut tmp).await?;
+        if n == 0 {
+            anyhow::bail!("connection closed before headers complete");
+        }
+        buf.extend_from_slice(&tmp[..n]);
+
+        // Check for end of headers (\r\n\r\n)
+        if let Some(pos) = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+        {
+            header_end = Some(pos + 4);
+            break;
+        }
+
+        // Limit header size to 64KB
+        if buf.len() > 65536 {
+            anyhow::bail!("request headers too large");
+        }
+    }
+
+    let header_end = header_end.unwrap();
+
+    // ── Parse Host header ──────────────────────────────────────────
+    let header_str = String::from_utf8_lossy(&buf[..header_end]);
+    let host = header_str
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            if line.to_lowercase().starts_with("host:") {
+                Some(line[5..].trim())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing Host header"))?;
+
+    // Strip port from Host (e.g., "myrouter.dome.com:8080" -> "myrouter.dome.com")
+    let hostname = host.rsplitn(2, ':').last().unwrap_or(host);
+
+    // Extract agent ID from subdomain
+    let agent_id = if domain.is_empty() {
+        // No domain configured — take first label before any dot
+        // e.g., "myrouter.example.com" -> "myrouter"
+        hostname.split('.').next().unwrap_or(hostname).to_string()
+    } else {
+        // Strip domain suffix to get subdomain
+        let domain_dot = format!(".{}", domain);
+        if hostname.ends_with(&domain_dot) {
+            let subdomain = &hostname[..hostname.len() - domain_dot.len()];
+            // Take first label before any dot (in case of multi-level subdomain)
+            subdomain.split('.').next().unwrap_or(subdomain).to_string()
+        } else {
+            // Domain doesn't match — use entire hostname as ID (fallback)
+            hostname.split('.').next().unwrap_or(hostname).to_string()
+        }
+    };
+
+    if agent_id.is_empty() {
+        anyhow::bail!("empty agent ID from Host: {}", host);
+    }
+
+    // ── Look up agent ──────────────────────────────────────────────
+    let (found_token, found_qualified, _) = mgr
+        .find_agent_by_id(&agent_id)
+        .await
+        .ok_or_else(|| anyhow::anyhow!("agent not found: {}", agent_id))?;
+
+    // ── Create tunnel to agent's port 80 ───────────────────────────
+    let tunnel_id = format!("http-{}-{}", found_qualified, std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros());
+    let local_addr = "127.0.0.1:80".to_string();
+
+    let (user_reader, user_writer) = client.into_split();
+
+    {
+        let mut tunnels = mgr.tunnels.lock().await;
+        tunnels.insert(
+            tunnel_id.clone(),
+            TunnelHandle {
+                agent_id: found_qualified.clone(),
+                client: Some(user_writer),
+            },
+        );
+    }
+
+    // Send TUN_OPEN to agent
+    let open_msg = format!("TUN_OPEN {} {}\n", tunnel_id, local_addr).into_bytes();
+    mgr.send_to_agent(&found_qualified, open_msg).await?;
+
+    // ── Forward the already-read initial data (HTTP headers + any body) ──
+    let initial_data = &buf[..];
+    if !initial_data.is_empty() {
+        let frame = format!("TUN_DATA {} {}\n", tunnel_id, initial_data.len());
+        let mut msg = frame.into_bytes();
+        msg.extend_from_slice(initial_data);
+        if mgr.send_to_agent(&found_qualified, msg).await.is_err() {
+            mgr.tunnels.lock().await.remove(&tunnel_id);
+            anyhow::bail!("agent disconnected");
+        }
+    }
+
+    // ── Pipe remaining request body to agent ───────────────────────
+    let mgr2 = mgr.clone();
+    let tid = tunnel_id.clone();
+    let aid = found_qualified.clone();
+    tokio::spawn(async move {
+        let _ = pipe_user_to_agent(mgr2.clone(), &tid, &aid, user_reader).await;
+        let mut tunnels = mgr2.tunnels.lock().await;
+        tunnels.remove(&tid);
+        let close_msg = format!("TUN_CLOSE {}\n", tid).into_bytes();
+        let _ = mgr2.send_to_agent(&aid, close_msg).await;
+    });
+
+    // The tunnel's write half (user_writer) is already registered in tunnels;
+    // agent responses flow back through the tunnel mechanism via TUN_DATA from agent.
+    // No further action needed here — the spawned task handles lifecycle.
+
+    Ok(())
 }

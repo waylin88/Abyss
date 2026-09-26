@@ -21,6 +21,12 @@ struct Cli {
 
     #[arg(long, default_value = "")]
     password: String,
+
+    #[arg(long, default_value = "18080", help = "HTTP proxy auto-routing port. 0 = disabled. Routes requests by Host header to agent's port 80.")]
+    http_proxy_port: u16,
+
+    #[arg(long, default_value = "", help = "Domain suffix for HTTP proxy (e.g., dome.com). Requests with Host: <agent_id>.dome.com are routed to that agent.")]
+    http_proxy_domain: String,
 }
 
 #[tokio::main]
@@ -48,9 +54,33 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Start HTTP proxy if port is configured
+    if cli.http_proxy_port > 0 {
+        let mgr = manager.clone();
+        let domain = cli.http_proxy_domain.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                agent_manager::start_http_proxy(mgr, cli.http_proxy_port, &domain).await
+            {
+                eprintln!("[server] HTTP proxy error: {}", e);
+            }
+        });
+    }
+
     let web_addr = cli.web_addr.clone();
     println!("[server] agent protocol on {}", cli.agent_addr);
     println!("[server] web UI on      http://{}", web_addr);
+    if cli.http_proxy_port > 0 {
+        println!(
+            "[server] HTTP proxy on    port {} (domain: {})",
+            cli.http_proxy_port,
+            if cli.http_proxy_domain.is_empty() {
+                "(any)"
+            } else {
+                &cli.http_proxy_domain
+            }
+        );
+    }
     if !cli.allow_tokens.is_empty() {
         println!("[server] allow tokens: {}", cli.allow_tokens);
     }
