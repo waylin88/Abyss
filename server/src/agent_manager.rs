@@ -33,6 +33,8 @@ pub struct AgentManager {
     pending_pings: Mutex<HashMap<String, oneshot::Sender<bool>>>,
     /// IP geolocation lookup (纯真IP库)
     ip_lookup: IpLookup,
+    /// Currently selected web proxy agent (only this agent's web UI is accessible via proxy)
+    web_agent: Mutex<Option<String>>,
 }
 
 pub struct AgentHandle {
@@ -90,6 +92,29 @@ impl AgentManager {
             forwards: Mutex::new(HashMap::new()),
             pending_pings: Mutex::new(HashMap::new()),
             ip_lookup,
+            web_agent: Mutex::new(None),
+        }
+    }
+
+    /// Set the currently selected web proxy agent.
+    /// Only this agent's port 80 will be accessible via the HTTP proxy.
+    pub async fn set_web_agent(&self, agent_id: &str) {
+        let mut w = self.web_agent.lock().await;
+        *w = Some(agent_id.to_string());
+    }
+
+    /// Clear the web agent restriction (allow all).
+    pub async fn clear_web_agent(&self) {
+        let mut w = self.web_agent.lock().await;
+        *w = None;
+    }
+
+    /// Check if a given agent_id is the currently selected web agent.
+    pub async fn check_web_agent(&self, agent_id: &str) -> bool {
+        let w = self.web_agent.lock().await;
+        match w.as_ref() {
+            Some(allowed) => agent_id == allowed.as_str(),
+            None => false, // no agent selected → deny all proxy access
         }
     }
 
@@ -942,6 +967,12 @@ async fn handle_http_proxy(
 
     if agent_id.is_empty() {
         anyhow::bail!("empty agent ID from Host: {}", host);
+    }
+
+    // ── Check web agent restriction ───────────────────────────────
+    // Only the currently selected agent's web UI is accessible
+    if !mgr.check_web_agent(&agent_id).await {
+        anyhow::bail!("agent {} is not the currently selected web agent", agent_id);
     }
 
     // ── Look up agent ──────────────────────────────────────────────

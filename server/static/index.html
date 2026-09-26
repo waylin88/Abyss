@@ -9,15 +9,14 @@
   body { font-family: -apple-system, Consolas, monospace; background: #0d1117; color: #c9d1d9; padding: 20px; }
   h1 { font-size: 18px; margin-bottom: 16px; color: #58a6ff; }
   h2 { font-size: 14px; margin-bottom: 8px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
-  .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
+  .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 320px 1fr; gap: 20px; }
   .panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
-  /* Left column — device list with independent scroll */
-  .left-col { max-height: calc(100vh - 90px); display:flex; flex-direction:column; }
+  /* Left column — natural height aligned with right; list scrolls when many devices */
+  .left-col { display:flex; flex-direction:column; min-height:0; }
   .left-col .panel { flex:1; display:flex; flex-direction:column; min-height:0; }
   .left-col #agents-list { flex:1; overflow-y:auto; min-height:0; }
-  /* Right column — stacked panels fill height so 活动映射 sticks to bottom */
-  .right-col { display:flex; flex-direction:column; gap:20px; min-height:calc(100vh - 90px); }
-  .right-col .section { margin-bottom:0; }
+  /* Right column — flex column so 活动映射 sticks to bottom */
+  .right-col { display:flex; flex-direction:column; gap:20px; }
   .right-col #forwards-panel { margin-top:auto; }
   .agent-item { padding: 6px 10px; border: 1px solid #30363d; border-radius: 6px; margin-bottom: 4px; cursor: pointer; transition: all 0.15s; display:flex; align-items:center; gap:4px; }
   .agent-item:hover { border-color: #58a6ff; }
@@ -402,6 +401,13 @@ function selectAgent(id) {
   updateWebUrl();
   refreshAgents();
   refreshForwards();
+
+  // Notify server that this agent is now the active web proxy target
+  fetch('/api/web/select', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({agent: id})
+  }).catch(() => {});
 }
 
 function fmtTime(epoch) {

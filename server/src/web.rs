@@ -93,6 +93,7 @@ pub async fn run(
         .route("/api/forward/stop", post(stop_forward))
         .route("/api/forwards", get(list_forwards))
         .route("/api/config", get(get_config).post(set_config))
+        .route("/api/web/select", post(api_web_select))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -363,6 +364,25 @@ async fn api_ping(
     }
     let ok = state.manager.ping_agent(&req.agent).await;
     (StatusCode::OK, Json(serde_json::json!({"ok": ok})))
+}
+
+#[derive(Deserialize)]
+struct WebSelectReq {
+    agent: String,
+}
+
+/// Select the currently active web proxy agent.
+/// Only this agent's port 80 will be accessible via the HTTP proxy (port 18080).
+async fn api_web_select(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<WebSelectReq>,
+) -> impl IntoResponse {
+    if !state.password.is_empty() && !check_auth(&headers, &state.sessions).await {
+        return unauth();
+    }
+    state.manager.set_web_agent(&req.agent).await;
+    (StatusCode::OK, Json(serde_json::json!({"ok": true})))
 }
 
 // ---------- Config ----------
