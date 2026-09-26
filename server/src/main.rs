@@ -15,6 +15,9 @@ struct Cli {
 
     #[arg(long, default_value = "")]
     token: String,
+
+    #[arg(long, default_value = "")]
+    password: String,
 }
 
 #[tokio::main]
@@ -36,9 +39,12 @@ async fn main() -> anyhow::Result<()> {
     println!("[server] agent protocol on {}", cli.agent_addr);
     println!("[server] web UI on      http://{}", web_addr);
     if !cli.token.is_empty() {
-        println!("[server] auth token:    {}", cli.token);
+        println!("[server] agent token:   {}", cli.token);
+    }
+    if !cli.password.is_empty() {
+        println!("[server] web password:  {} (login required)", cli.password);
     }
 
-    web::run(manager, &web_addr).await?;
+    web::run(manager, &web_addr, &cli.password).await?;
     Ok(())
 }

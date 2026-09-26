@@ -22,15 +22,43 @@
   button:hover { background: #2ea043; }
   button.secondary { background: #30363d; }
   button.secondary:hover { background: #484f58; }
+  button.danger { background: #da3633; }
+  button.danger:hover { background: #f85149; }
   #output { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; min-height: 200px; max-height: 400px; overflow: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; margin-top: 8px; }
   .fwd-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
   .fwd-form input { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font-size: 13px; width: 100px; }
   .empty { color: #8b949e; font-size: 13px; text-align: center; padding: 20px; }
   .section { margin-bottom: 20px; }
+  .fwd-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border: 1px solid #30363d; border-radius: 6px; margin-bottom: 6px; font-size: 13px; }
+  .fwd-item .left { flex: 1; }
+  .fwd-item .right { margin-left: 8px; }
+  .fwd-item .right button { margin: 0; padding: 4px 10px; font-size: 12px; }
+  .fwd-meta { font-size: 11px; color: #8b949e; margin-top: 2px; }
+  /* Login overlay */
+  #login-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 999; align-items: center; justify-content: center; }
+  #login-overlay.show { display: flex; }
+  .login-box { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 32px; width: 360px; text-align: center; }
+  .login-box h2 { color: #e6edf3; font-size: 20px; margin-bottom: 20px; text-transform: none; letter-spacing: 0; }
+  .login-box input { width: 100%; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px; font-size: 15px; margin-bottom: 16px; }
+  .login-box input:focus { border-color: #58a6ff; outline: none; }
+  .login-box button { width: 100%; padding: 10px; font-size: 15px; }
+  .login-error { color: #f85149; font-size: 13px; margin-top: 8px; display: none; }
 </style>
 </head>
 <body>
-<h1>📡 Router Manager</h1>
+
+<!-- Login overlay -->
+<div id="login-overlay">
+  <div class="login-box">
+    <h2>Router Manager</h2>
+    <p style="color:#8b949e;font-size:14px;margin-bottom:20px">请输入管理密码</p>
+    <input type="password" id="login-pwd" placeholder="密码" autocomplete="off">
+    <button onclick="doLogin()">登录</button>
+    <div class="login-error" id="login-error">密码错误，请重试</div>
+  </div>
+</div>
+
+<h1>Router Manager</h1>
 <div class="container">
   <div class="panel">
     <h2>在线设备</h2>
@@ -41,32 +69,100 @@
       <h2>Shell 命令执行</h2>
       <div style="font-size:12px;color:#8b949e;margin-bottom:8px">目标：<span id="current-agent" style="color:#58a6ff">（未选择）</span></div>
       <textarea class="cmd-area" id="cmd-input" placeholder="例如：cat /etc/openwrt_release"></textarea>
-      <button onclick="execCmd()">▶ 执行</button>
+      <button onclick="execCmd()">执行</button>
       <button class="secondary" onclick="document.getElementById('cmd-input').value='ifconfig br-lan\nfree -m\ndf -h'" style="margin-left:8px">常用命令</button>
       <pre id="output"></pre>
     </div>
-    <div class="panel">
+    <div class="panel section">
       <h2>端口映射</h2>
-      <div style="font-size:12px;color:#8b949e;margin-bottom:8px">将路由器上的端口映射到公网服务器，外部可直接访问</div>
+      <p style="font-size:12px;color:#8b949e;margin-bottom:8px">将路由器上的端口映射到公网服务器，外部可直接访问</p>
       <div class="fwd-form">
         <input id="fwd-local" placeholder="本地端口" value="80">
         <span style="color:#8b949e">→ 服务器端口</span>
         <input id="fwd-server" placeholder="服务器端口" value="18080">
-        <button onclick="doForward()">🔗 创建映射</button>
+        <button onclick="doForward()">创建映射</button>
       </div>
-      <div style="font-size:11px;color:#8b949e;margin-top:6px">
+      <p style="font-size:11px;color:#8b949e;margin-top:6px">
         映射后，外部访问 http://服务器IP:端口 即可到达路由器对应端口
-      </div>
+      </p>
+    </div>
+    <div class="panel section" id="forwards-panel">
+      <h2>活动映射 <span id="fwd-count" style="color:#8b949e;font-weight:normal;font-size:12px">(0)</span></h2>
+      <div id="forwards-list"><div class="empty">暂无活动映射</div></div>
     </div>
   </div>
 </div>
 
 <script>
 let currentAgent = null;
+let currentAgentName = '';
+let authToken = null;
+let needLogin = false;
+
+function getHeaders() {
+  const h = {'Content-Type': 'application/json'};
+  if (authToken) h['Authorization'] = 'Bearer ' + authToken;
+  return h;
+}
+
+// ---------- Login ----------
+
+async function doLogin() {
+  const pwd = document.getElementById('login-pwd').value;
+  if (!pwd) return;
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pwd})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      authToken = data.token;
+      document.getElementById('login-overlay').classList.remove('show');
+      document.getElementById('login-error').style.display = 'none';
+      refreshAgents();
+      refreshForwards();
+    } else {
+      document.getElementById('login-error').style.display = 'block';
+    }
+  } catch(e) {
+    document.getElementById('login-error').textContent = '连接失败: ' + e.message;
+    document.getElementById('login-error').style.display = 'block';
+  }
+}
+
+// Press Enter to login
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('login-pwd').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doLogin();
+  });
+  checkNeedLogin();
+});
+
+async function checkNeedLogin() {
+  // Try to fetch agents — if 401, show login
+  try {
+    const res = await fetch('/api/agents', {headers: getHeaders()});
+    if (res.status === 401) {
+      needLogin = true;
+      document.getElementById('login-overlay').classList.add('show');
+    } else {
+      // No password needed, start normally
+      refreshAgents();
+      refreshForwards();
+    }
+  } catch(e) {
+    // Offline, will retry
+  }
+}
+
+// ---------- Agents ----------
 
 async function refreshAgents() {
   try {
-    const res = await fetch('/api/agents');
+    const res = await fetch('/api/agents', {headers: getHeaders()});
+    if (res.status === 401) { needLogin = true; document.getElementById('login-overlay').classList.add('show'); return; }
     const agents = await res.json();
     const list = document.getElementById('agents-list');
     if (agents.length === 0) {
@@ -84,26 +180,32 @@ async function refreshAgents() {
 
 function selectAgent(id, name) {
   currentAgent = id;
+  currentAgentName = name;
   document.getElementById('current-agent').textContent = name + ' (' + id + ')';
   refreshAgents();
+  refreshForwards();
 }
+
+// ---------- Exec ----------
 
 async function execCmd() {
   if (!currentAgent) { alert('请先选择一个路由器'); return; }
   const cmd = document.getElementById('cmd-input').value.trim();
   if (!cmd) return;
   const out = document.getElementById('output');
-  out.textContent = '⏳ 执行中...';
+  out.textContent = '执行中...';
   try {
     const res = await fetch('/api/exec', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      headers: getHeaders(),
       body: JSON.stringify({agent: currentAgent, cmd})
     });
     const data = await res.json();
     out.textContent = data.output + '\n[exit code: ' + data.code + ']';
   } catch(e) { out.textContent = '错误: ' + e.message; }
 }
+
+// ---------- Forward ----------
 
 async function doForward() {
   if (!currentAgent) { alert('请先选择一个路由器'); return; }
@@ -113,13 +215,60 @@ async function doForward() {
   try {
     const res = await fetch('/api/forward', {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({agent: currentAgent, local_port: lp, server_port: sp})
+      headers: getHeaders(),
+      body: JSON.stringify({agent: currentAgent, agent_name: currentAgentName, local_port: lp, server_port: sp})
     });
     const data = await res.json();
-    if (data.ok) alert('✅ 映射已创建\n服务器端口: ' + sp + '\n路由目标: localhost:' + lp);
-    else alert('❌ 失败: ' + data.err);
+    if (data.ok) {
+      alert('映射已创建\n服务器端口: ' + sp + '\n路由目标: localhost:' + lp);
+      refreshForwards();
+    } else {
+      alert('失败: ' + data.err);
+    }
   } catch(e) { alert('错误: ' + e.message); }
+}
+
+async function stopForward(id) {
+  if (!confirm('确定停止此映射？')) return;
+  try {
+    const res = await fetch('/api/forward/stop', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({id})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      refreshForwards();
+    } else {
+      alert('停止失败: ' + data.err);
+    }
+  } catch(e) { alert('错误: ' + e.message); }
+}
+
+async function refreshForwards() {
+  try {
+    const res = await fetch('/api/forwards', {headers: getHeaders()});
+    if (res.status === 401) return;
+    const forwards = await res.json();
+    const list = document.getElementById('forwards-list');
+    const count = document.getElementById('fwd-count');
+    count.textContent = '(' + forwards.length + ')';
+    if (forwards.length === 0) {
+      list.innerHTML = '<div class="empty">暂无活动映射</div>';
+      return;
+    }
+    list.innerHTML = forwards.map(f => `
+      <div class="fwd-item">
+        <div class="left">
+          <strong>0.0.0.0:${f.server_port}</strong> → ${f.agent_name} (${f.local_addr})
+          <div class="fwd-meta">${f.agent_id} · ${f.id}</div>
+        </div>
+        <div class="right">
+          <button class="danger" onclick="stopForward('${f.id}')">关闭</button>
+        </div>
+      </div>
+    `).join('');
+  } catch(e) { console.error(e); }
 }
 
 document.addEventListener('keydown', e => {
@@ -127,7 +276,7 @@ document.addEventListener('keydown', e => {
 });
 
 setInterval(refreshAgents, 3000);
-refreshAgents();
+setInterval(refreshForwards, 5000);
 </script>
 </body>
 </html>
