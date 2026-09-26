@@ -55,83 +55,87 @@ fn hide_args(argv0: &str) {
         if !perms.contains('w') || !perms.contains('p') {
             continue;
         }
-
         let range: Vec<&str> = parts[0].split('-').collect();
         if range.len() != 2 {
             continue;
         }
-        let start = match usize::from_str_radix(range[0], 16) {
+        let seg_start = match usize::from_str_radix(range[0], 16) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        let end = match usize::from_str_radix(range[1], 16) {
+        let seg_end = match usize::from_str_radix(range[1], 16) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if end <= start || end - start > 8 * 1024 * 1024 {
+        if seg_end <= seg_start {
+            continue;
+        }
+        let seg_len = seg_end - seg_start;
+        if seg_len > 16 * 1024 * 1024 {
             continue;
         }
 
-        let slice = unsafe { std::slice::from_raw_parts(start as *const u8, end - start) };
-        if let Some(offset) = slice.windows(marker.len()).position(|w| w == marker) {
-            let arg_start = start + offset;
-            let total;
-            let mut search = &slice[offset..];
-            let mut i = marker.len() + 1;
-            loop {
-                if i >= search.len() {
-                    total = i;
-                    break;
+        let seg = unsafe { std::slice::from_raw_parts(seg_start as *const u8, seg_len) };
+
+        let mut pos = 0usize;
+        while pos + marker.len() < seg.len() {
+            if &seg[pos..pos + marker.len()] == marker
+                && pos + marker.len() < seg.len()
+                && seg[pos + marker.len()] == 0
+            {
+                let arg_start = seg_start + pos;
+                let mut total = marker.len() + 1;
+                let mut scan = pos + marker.len() + 1;
+                while scan < seg.len() && total < 8192 {
+                    if seg[scan] == 0 {
+                        if scan + 1 < seg.len() && seg[scan + 1] == 0 {
+                            total += 1;
+                            break;
+                        }
+                        total += 1;
+                        scan += 1;
+                        continue;
+                    }
+                    total += 1;
+                    scan += 1;
                 }
-                if search[i] == 0 && i + 1 < search.len() && search[i + 1] != 0 {
-                    i += 2;
+                if arg_start + total > seg_end || total == 0 {
+                    pos += 1;
                     continue;
                 }
-                if search[i] == 0 && (i + 1 >= search.len() || search[i + 1] == 0) {
-                    total = i + 1;
-                    break;
+
+                eprintln!(
+                    "[hide_args] found argv at 0x{:x} ({} bytes)",
+                    arg_start, total
+                );
+
+                let argv_slice = unsafe {
+                    std::slice::from_raw_parts_mut(arg_start as *mut u8, total)
+                };
+                for byte in argv_slice.iter_mut() {
+                    *byte = 0;
                 }
-                i += 1;
-            }
+                let name = b"rtragent";
+                let copy_len = name.len().min(argv_slice.len().saturating_sub(1));
+                argv_slice[..copy_len].copy_from_slice(&name[..copy_len]);
+                argv_slice[copy_len] = 0;
 
-            eprintln!(
-                "[hide_args] found argv at 0x{:x}..0x{:x} ({} bytes)",
-                arg_start,
-                arg_start + total,
-                total
-            );
-
-            let argv_slice =
-                unsafe { std::slice::from_raw_parts_mut(arg_start as *mut u8, total) };
-            let before: String = argv_slice
-                .iter()
-                .take(total.min(80))
-                .map(|&b| if b == 0 { ' ' } else { b as char })
-                .collect();
-            eprintln!("[hide_args] before: {}", before.trim());
-
-            for byte in argv_slice.iter_mut() {
-                *byte = 0;
-            }
-            let name = b"rtragent";
-            let copy_len = name.len().min(argv_slice.len().saturating_sub(1));
-            argv_slice[..copy_len].copy_from_slice(&name[..copy_len]);
-            argv_slice[copy_len] = 0;
-
-            match std::fs::read("/proc/self/cmdline") {
-                Ok(cmdline) => {
-                    let display: String = cmdline
-                        .iter()
-                        .map(|&b| if b == 0 { ' ' } else { b as char })
-                        .collect();
-                    eprintln!("[hide_args] cmdline now: {}", display.trim());
+                match std::fs::read("/proc/self/cmdline") {
+                    Ok(cmdline) => {
+                        let display: String = cmdline
+                            .iter()
+                            .map(|&b| if b == 0 { ' ' } else { b as char })
+                            .collect();
+                        eprintln!("[hide_args] cmdline now: {}", display.trim());
+                    }
+                    Err(e) => eprintln!("[hide_args] verify: {}", e),
                 }
-                Err(e) => eprintln!("[hide_args] verify cmdline: {}", e),
+                return;
             }
-            return;
+            pos += 1;
         }
     }
-    eprintln!("[hide_args] marker '{}' not found in any RW map", argv0);
+    eprintln!("[hide_args] marker '{}' not found", argv0);
 }
 
 #[cfg(not(target_os = "linux"))]
