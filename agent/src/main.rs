@@ -14,31 +14,51 @@ struct TunnelState {
     local_stream: TcpStream,
 }
 
+fn parse_arg(args: &[String], name: &str) -> Option<String> {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == name || args[i] == &format!("-{}", name.chars().nth(1).unwrap_or('?')) {
+            return args.get(i + 1).cloned();
+        }
+        i += 1;
+    }
+    None
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() >= 2 && (args[1] == "-h" || args[1] == "--help") {
         eprintln!("rtragent - lightweight router agent");
         eprintln!();
-        eprintln!("USAGE: rtragent <server_addr> [token] [name] [id]");
+        eprintln!("USAGE: rtragent --server <addr> [--token <token>] [--name <name>] [--id <id>]");
         eprintln!();
-        eprintln!("ARGS:");
-        eprintln!("  server_addr   Server address (default: 127.0.0.1:9527)");
-        eprintln!("  token         Auth token (optional)");
-        eprintln!("  name          Agent display name (default: router)");
-        eprintln!("  id            Unique device ID, server uses it to identify");
-        eprintln!("                this agent across reconnections (optional).");
-        eprintln!("                If not set, server generates one from name+port.");
+        eprintln!("OPTIONS:");
+        eprintln!("  -s, --server <addr>   Server address (default: 127.0.0.1:9527)");
+        eprintln!("  -t, --token <token>   Auth token (optional)");
+        eprintln!("  -n, --name <name>     Agent display name (default: router)");
+        eprintln!("  -i, --id <id>         Unique device ID. Server uses it to");
+        eprintln!("                        identify this agent across reconnections.");
+        eprintln!("                        If not set, server generates one.");
+        eprintln!("  -h, --help            Print this help");
         eprintln!();
         eprintln!("EXAMPLE:");
-        eprintln!("    rtragent 1.2.3.4:9527 mysecret rt-a1b2 00:11:22:33:44:55");
+        eprintln!("    rtragent --server 1.2.3.4:9527 --token mysecret --name my-router --id AA:BB:CC:DD:EE:FF");
         return;
     }
 
-    let server = args.get(1).map(|s| s.as_str()).unwrap_or("127.0.0.1:9527");
-    let token = args.get(2).map(|s| s.as_str()).unwrap_or("");
-    let name = args.get(3).map(|s| s.as_str()).unwrap_or("router");
-    let id = args.get(4).map(|s| s.as_str()).unwrap_or("");
+    let server = parse_arg(&args, "--server")
+        .or_else(|| parse_arg(&args, "-s"))
+        .unwrap_or_else(|| "127.0.0.1:9527".to_string());
+    let token = parse_arg(&args, "--token")
+        .or_else(|| parse_arg(&args, "-t"))
+        .unwrap_or_default();
+    let name = parse_arg(&args, "--name")
+        .or_else(|| parse_arg(&args, "-n"))
+        .unwrap_or_else(|| "router".to_string());
+    let id = parse_arg(&args, "--id")
+        .or_else(|| parse_arg(&args, "-i"))
+        .unwrap_or_default();
 
     loop {
         eprintln!("[rtragent] connecting to {} as {}", server, name);
