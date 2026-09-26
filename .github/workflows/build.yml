@@ -29,10 +29,9 @@ jobs:
             docker_image: messense/rust-musl-cross:mips-musl
           - job_name: rtragent-mipsel
             binary: rtragent
-            target: mipsel-unknown-linux-uclibc
-            builder: padavan
-            toolchain_url: https://github.com/hanwckf/padavan-toolchain/releases/download/v1.0/mipsel-linux-uclibc.tar.xz
-            toolchain_dir: mipsel-linux-uclibc
+            target: mipsel-unknown-linux-musl
+            builder: musl-cross
+            docker_image: messense/rust-musl-cross:mipsel-musl
           - job_name: rtragent-armv7
             binary: rtragent
             target: armv7-unknown-linux-musleabihf
@@ -78,25 +77,6 @@ jobs:
         run: |
           docker run --rm -v $PWD:/home/rust/src ${{ matrix.docker_image }} \
             bash -c "cargo build --release -p ${{ matrix.binary }} --target ${{ matrix.target }}"
-
-      - name: Install Rust (padavan toolchain)
-        if: matrix.builder == 'padavan'
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
-
-      - name: Download Padavan toolchain
-        if: matrix.builder == 'padavan'
-        run: |
-          wget -q "${{ matrix.toolchain_url }}" -O /tmp/toolchain.tar.xz
-          sudo tar -xf /tmp/toolchain.tar.xz -C /opt
-          echo "/opt/${{ matrix.toolchain_dir }}/bin" >> $GITHUB_PATH
-
-      - name: Build (padavan)
-        if: matrix.builder == 'padavan'
-        env:
-          CARGO_TARGET_MIPSEL_UNKNOWN_LINUX_UCLIBC_LINKER: mipsel-linux-uclibc-gcc
-        run: cargo build -Z build-std --release -p ${{ matrix.binary }} --target ${{ matrix.target }}
 
       - name: Rename & Verify
         run: |
