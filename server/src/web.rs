@@ -74,47 +74,33 @@ fn generate_session_token() -> String {
 }
 
 async fn check_auth(headers: &HeaderMap, sessions: &Mutex<HashMap<String, Instant>>) -> bool {
+    // Extract session token from cookie
+    let token_from_cookie = |headers: &HeaderMap| -> Option<&str> {
+        if let Some(cookie) = headers.get(header::COOKIE) {
+            if let Ok(cookie_str) = cookie.to_str() {
+                for part in cookie_str.split(';') {
+                    let part = part.trim();
+                    if let Some(val) = part.strip_prefix("token=") {
+                        return Some(val.trim());
+                    }
+                }
+            }
+        }
+        None
+    };
+
     let token = if let Some(auth) = headers.get(header::AUTHORIZATION) {
         if let Ok(auth_str) = auth.to_str() {
             if let Some(val) = auth_str.strip_prefix("Bearer ") {
-                val.trim()
+                Some(val.trim())
             } else {
-                // Try cookie fallback
-                if let Some(cookie) = headers.get(header::COOKIE) {
-                    if let Ok(cookie_str) = cookie.to_str() {
-                        let mut found = None;
-                        for part in cookie_str.split(';') {
-                            let part = part.trim();
-                            if let Some(val) = part.strip_prefix("token=") {
-                                found = Some(val.trim());
-                            }
-                        }
-                        found
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+                token_from_cookie(headers)
             }
-        } else {
-            None
-        }
-    } else if let Some(cookie) = headers.get(header::COOKIE) {
-        if let Ok(cookie_str) = cookie.to_str() {
-            let mut found = None;
-            for part in cookie_str.split(';') {
-                let part = part.trim();
-                if let Some(val) = part.strip_prefix("token=") {
-                    found = Some(val.trim());
-                }
-            }
-            found
         } else {
             None
         }
     } else {
-        None
+        token_from_cookie(headers)
     };
 
     if let Some(t) = token {

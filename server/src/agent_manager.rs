@@ -860,9 +860,8 @@ async fn handle_http_proxy(
     // ── Read HTTP request headers (up to \r\n\r\n) ────────────────
     let mut buf = Vec::with_capacity(4096);
     let mut tmp = [0u8; 1024];
-    let mut header_end = None;
 
-    loop {
+    let header_end = loop {
         let n = client.read(&mut tmp).await?;
         if n == 0 {
             anyhow::bail!("connection closed before headers complete");
@@ -874,17 +873,14 @@ async fn handle_http_proxy(
             .windows(4)
             .position(|w| w == b"\r\n\r\n")
         {
-            header_end = Some(pos + 4);
-            break;
+            break pos + 4;
         }
 
         // Limit header size to 64KB
         if buf.len() > 65536 {
             anyhow::bail!("request headers too large");
         }
-    }
-
-    let header_end = header_end.unwrap();
+    };
 
     // ── Parse Host header ──────────────────────────────────────────
     let header_str = String::from_utf8_lossy(&buf[..header_end]);
@@ -926,7 +922,7 @@ async fn handle_http_proxy(
     }
 
     // ── Look up agent ──────────────────────────────────────────────
-    let (found_token, found_qualified, _) = mgr
+    let (_, found_qualified, _) = mgr
         .find_agent_by_id(&agent_id)
         .await
         .ok_or_else(|| anyhow::anyhow!("agent not found: {}", agent_id))?;
