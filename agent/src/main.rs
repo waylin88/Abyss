@@ -32,55 +32,59 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
 
 /// Hide command-line arguments from `ps`/`top` etc. on Linux.
 ///
-/// Reads the argv memory address from `/proc/self/stat`, then directly
-/// zeroes out the argument strings in-place via a raw pointer — exactly
-/// the same technique used by the classic C approach:
+/// Directly zeroes out the raw argv string area in memory — exactly the
+/// same technique used by the mDNSResponder C code:
 ///
-///   for (i = 1; i < argc; i++) memset(argv[i], 0, strlen(argv[i]));
+///   total = 0;
+///   for (i = 0; i < argc; i++) total += strlen(argv[i]) + 1;
+///   memset(argv[0], 0, total);
+///   strncpy(argv[0], label, total - 1);
 ///
-/// No `prctl`, no `/proc/self/mem`, no capability required — the argv
-/// area lives on the process's own stack and is always writable.
+/// Gets the argv strings address from `/proc/self/stat`, then writes
+/// zeros via a raw pointer.  The argv area lives on the process's own
+/// stack so no special privileges are needed.
 #[cfg(target_os = "linux")]
 fn hide_args() {
-    // ── 1. Find the in-memory argv range ──
-    let (arg_start, arg_end) = match get_argv_range() {
-        Some(v) => v,
+    // ── 1. Find argv strings address range from /proc/self/stat ──
+    // arg_start = field 48, arg_end = field 49 (1‑indexed per kernel docs).
+    // After removing pid + comm (first 2 fields), they sit at indices 45/46.
+    let stat = match std::fs::read_to_string("/proc/self/stat") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let close_paren = match stat.rfind(')') {
+        Some(p) => p,
         None => return,
     };
-    if arg_start == 0 || arg_end <= arg_start {
-        return;
-    }
+    let rest = &stat[close_paren + 2..];
+    let fields: Vec<&str> = rest.split_whitespace().collect();
 
-    // ── 2. Zero out the entire argv memory area ──
-    // The argv data (null-separated C strings) sits on the initial process
-    // stack which is always readable + writable by the process itself.
-    let len = (arg_end - arg_start).min(65536); // safety cap
+    let arg_start = match fields.get(45)?.parse::<usize>().ok() {
+        Some(v) if v != 0 => v,
+        _ => return,
+    };
+    let arg_end = match fields.get(46)?.parse::<usize>().ok() {
+        Some(v) if v > arg_start => v,
+        _ => return,
+    };
+
+    // ── 2. Zero the entire argv string area ──
+    // This is the exact Rust equivalent of:
+    //   total = 0; for (i=0; i<argc; i++) total += strlen(argv[i]) + 1;
+    //   memset(argv[0], 0, total);
+    let len = (arg_end - arg_start).min(65536);
     let argv_bytes = unsafe { std::slice::from_raw_parts_mut(arg_start as *mut u8, len) };
-
-    // Fill with NULs
     for byte in argv_bytes.iter_mut() {
         *byte = 0;
     }
 
     // ── 3. Write program name at the start ──
+    // This is the Rust equivalent of:
+    //   strncpy(argv[0], "rtragent", total - 1);
     let name = b"rtragent";
     let copy_len = name.len().min(argv_bytes.len().saturating_sub(1));
     argv_bytes[..copy_len].copy_from_slice(&name[..copy_len]);
-    argv_bytes[copy_len] = 0; // NUL-terminate
-}
-
-/// Parse `arg_start` and `arg_end` (fields 48 & 49) from `/proc/self/stat`.
-#[cfg(target_os = "linux")]
-fn get_argv_range() -> Option<(usize, usize)> {
-    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
-    // The comm field is enclosed in parentheses and is the only field that
-    // may contain spaces. Find the last ')' to reliably locate its end.
-    let close_paren = stat.rfind(')')?;
-    let rest = &stat[close_paren + 2..]; // skip ") "
-    let fields: Vec<&str> = rest.split_whitespace().collect();
-    let arg_start = fields.get(47)?.parse::<usize>().ok()?; // 0‑based index
-    let arg_end = fields.get(48)?.parse::<usize>().ok()?;
-    Some((arg_start, arg_end))
+    argv_bytes[copy_len] = 0;
 }
 
 #[cfg(not(target_os = "linux"))]
