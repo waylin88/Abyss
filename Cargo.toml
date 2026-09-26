@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["server", "agent"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+
+[profile.release]
+opt-level = "z"
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true

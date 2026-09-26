@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Router Manager</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, Consolas, monospace; background: #0d1117; color: #c9d1d9; padding: 20px; }
+  h1 { font-size: 18px; margin-bottom: 16px; color: #58a6ff; }
+  h2 { font-size: 14px; margin-bottom: 8px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
+  .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 320px 1fr; gap: 20px; }
+  .panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+  .agent-item { padding: 10px; border: 1px solid #30363d; border-radius: 6px; margin-bottom: 8px; cursor: pointer; transition: all 0.15s; }
+  .agent-item:hover { border-color: #58a6ff; }
+  .agent-item.active { border-color: #238636; background: #0d2818; }
+  .agent-name { font-weight: bold; font-size: 14px; color: #e6edf3; }
+  .agent-meta { font-size: 11px; color: #8b949e; margin-top: 4px; }
+  .agent-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #238636; margin-right: 6px; }
+  .cmd-area { width: 100%; min-height: 80px; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 8px; font-family: monospace; font-size: 13px; resize: vertical; }
+  button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 13px; margin-top: 8px; }
+  button:hover { background: #2ea043; }
+  button.secondary { background: #30363d; }
+  button.secondary:hover { background: #484f58; }
+  #output { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; min-height: 200px; max-height: 400px; overflow: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; margin-top: 8px; }
+  .fwd-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .fwd-form input { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font-size: 13px; width: 100px; }
+  .empty { color: #8b949e; font-size: 13px; text-align: center; padding: 20px; }
+  .section { margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<h1>📡 Router Manager</h1>
+<div class="container">
+  <div class="panel">
+    <h2>在线设备</h2>
+    <div id="agents-list"><div class="empty">刷新中...</div></div>
+  </div>
+  <div>
+    <div class="panel section">
+      <h2>Shell 命令执行</h2>
+      <div style="font-size:12px;color:#8b949e;margin-bottom:8px">目标：<span id="current-agent" style="color:#58a6ff">（未选择）</span></div>
+      <textarea class="cmd-area" id="cmd-input" placeholder="例如：cat /etc/openwrt_release"></textarea>
+      <button onclick="execCmd()">▶ 执行</button>
+      <button class="secondary" onclick="document.getElementById('cmd-input').value='ifconfig br-lan\nfree -m\ndf -h'" style="margin-left:8px">常用命令</button>
+      <pre id="output"></pre>
+    </div>
+    <div class="panel">
+      <h2>端口映射</h2>
+      <div style="font-size:12px;color:#8b949e;margin-bottom:8px">将路由器上的端口映射到公网服务器，外部可直接访问</div>
+      <div class="fwd-form">
+        <input id="fwd-local" placeholder="本地端口" value="80">
+        <span style="color:#8b949e">→ 服务器端口</span>
+        <input id="fwd-server" placeholder="服务器端口" value="18080">
+        <button onclick="doForward()">🔗 创建映射</button>
+      </div>
+      <div style="font-size:11px;color:#8b949e;margin-top:6px">
+        映射后，外部访问 http://服务器IP:端口 即可到达路由器对应端口
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentAgent = null;
+
+async function refreshAgents() {
+  try {
+    const res = await fetch('/api/agents');
+    const agents = await res.json();
+    const list = document.getElementById('agents-list');
+    if (agents.length === 0) {
+      list.innerHTML = '<div class="empty">暂无在线设备<br><br>在路由器上运行：<br><code style="color:#58a6ff">rtragent 服务器IP:9527</code></div>';
+      return;
+    }
+    list.innerHTML = agents.map(a => `
+      <div class="agent-item ${currentAgent === a.id ? 'active' : ''}" onclick="selectAgent('${a.id}', '${a.name}')">
+        <span class="agent-dot"></span><span class="agent-name">${a.name}</span>
+        <div class="agent-meta">${a.addr} · 在线 ${Math.floor(a.uptime_secs/60)}分${a.uptime_secs%60}秒</div>
+      </div>
+    `).join('');
+  } catch(e) { console.error(e); }
+}
+
+function selectAgent(id, name) {
+  currentAgent = id;
+  document.getElementById('current-agent').textContent = name + ' (' + id + ')';
+  refreshAgents();
+}
+
+async function execCmd() {
+  if (!currentAgent) { alert('请先选择一个路由器'); return; }
+  const cmd = document.getElementById('cmd-input').value.trim();
+  if (!cmd) return;
+  const out = document.getElementById('output');
+  out.textContent = '⏳ 执行中...';
+  try {
+    const res = await fetch('/api/exec', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({agent: currentAgent, cmd})
+    });
+    const data = await res.json();
+    out.textContent = data.output + '\n[exit code: ' + data.code + ']';
+  } catch(e) { out.textContent = '错误: ' + e.message; }
+}
+
+async function doForward() {
+  if (!currentAgent) { alert('请先选择一个路由器'); return; }
+  const lp = parseInt(document.getElementById('fwd-local').value);
+  const sp = parseInt(document.getElementById('fwd-server').value);
+  if (!lp || !sp) { alert('请输入有效端口'); return; }
+  try {
+    const res = await fetch('/api/forward', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({agent: currentAgent, local_port: lp, server_port: sp})
+    });
+    const data = await res.json();
+    if (data.ok) alert('✅ 映射已创建\n服务器端口: ' + sp + '\n路由目标: localhost:' + lp);
+    else alert('❌ 失败: ' + data.err);
+  } catch(e) { alert('错误: ' + e.message); }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) execCmd();
+});
+
+setInterval(refreshAgents, 3000);
+refreshAgents();
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+[package]
+name = "rtragent"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "rtragent"
+path = "src/main.rs"
+
+[dependencies]
