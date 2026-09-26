@@ -7,9 +7,9 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::agent_manager::{AgentInfo, AgentManager, ForwardInfo};
+use crate::agent_manager::AgentManager;
 
 #[derive(Clone)]
 struct AppState {
@@ -76,7 +76,10 @@ async fn api_login(
     Json(req): Json<LoginReq>,
 ) -> impl IntoResponse {
     if req.password == *state.password {
-        Json(serde_json::json!({"ok": true, "token": &*state.password}))
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok": true, "token": &*state.password})),
+        )
     } else {
         (
             StatusCode::UNAUTHORIZED,
@@ -92,19 +95,13 @@ async fn list_agents(
     if !check_auth(&headers, &state.password) {
         return unauth();
     }
-    (StatusCode::OK, Json(state.manager.list().await))
+    (StatusCode::OK, Json(serde_json::json!(state.manager.list().await)))
 }
 
 #[derive(Deserialize)]
 struct ExecReq {
     agent: String,
     cmd: String,
-}
-
-#[derive(Serialize)]
-struct ExecResp {
-    code: i32,
-    output: String,
 }
 
 async fn exec_cmd(
@@ -118,14 +115,11 @@ async fn exec_cmd(
     match state.manager.exec(&req.agent, &req.cmd).await {
         Ok(r) => (
             StatusCode::OK,
-            Json(ExecResp { code: r.code, output: r.output }),
+            Json(serde_json::json!({"code": r.code, "output": r.output})),
         ),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(ExecResp {
-                code: -1,
-                output: e.to_string(),
-            }),
+            Json(serde_json::json!({"code": -1, "output": e.to_string()})),
         ),
     }
 }
@@ -205,5 +199,5 @@ async fn list_forwards(
     if !check_auth(&headers, &state.password) {
         return unauth();
     }
-    (StatusCode::OK, Json(state.manager.list_forwards().await))
+    (StatusCode::OK, Json(serde_json::json!(state.manager.list_forwards().await)))
 }
