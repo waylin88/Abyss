@@ -2,11 +2,30 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
+
+/// Configure aggressive TCP keepalive on a stream so that a dead
+/// connection (kill -9, power loss, cable cut) is detected within
+/// ~60 seconds instead of the OS default of 2–120 minutes.
+fn set_tcp_keepalive(s: &TcpStream) {
+    if let Ok(std) = s.try_clone() {
+        if let Ok(std) = std.into_std() {
+            if let Ok(s2) = socket2::SockRef::from(&std) {
+                // Idle 30 s before first probe
+                let _ = s2.set_tcp_keepalive(
+                    &socket2::TcpKeepalive::new()
+                        .with_time(Duration::from_secs(30))
+                        .with_interval(Duration::from_secs(10))
+                        .with_retries(3),
+                );
+            }
+        }
+    }
+}
 
 pub struct AgentManager {
     /// token → id → AgentHandle
@@ -291,6 +310,9 @@ async fn handle_agent(
     allow_tokens: &[String],
     block_tokens: &[String],
 ) -> anyhow::Result<()> {
+    // Enable aggressive TCP keepalive for fast dead-connection detection
+    set_tcp_keepalive(&socket);
+
     let mut hello_buf: Vec<u8> = Vec::with_capacity(256);
     let line = read_line(&mut socket, &mut hello_buf).await?;
 
