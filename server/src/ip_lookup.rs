@@ -36,10 +36,14 @@ impl IpLookup {
         let loc = wry.read_ip_location(ip)?;
         let mut parts = Vec::new();
         if !loc.country.is_empty() {
-            parts.push(loc.country.as_str());
+            // Remove Unicode replacement characters and trim garbage
+            parts.push(clean_ip_str(&loc.country));
         }
         if !loc.area.is_empty() {
-            parts.push(loc.area.as_str());
+            let area = clean_ip_str(&loc.area);
+            if !area.is_empty() {
+                parts.push(area);
+            }
         }
         if parts.is_empty() {
             None
@@ -47,4 +51,15 @@ impl IpLookup {
             Some(parts.join(" "))
         }
     }
+}
+
+/// Remove Unicode replacement character (U+FFFD) and other non-printable garbage.
+/// The pure QQWry database often contains GBK bytes that get mangled into
+/// replacement characters when interpreted as UTF-8.
+fn clean_ip_str(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c != '\u{FFFD}' && !c.is_control() && *c != '\0')
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
