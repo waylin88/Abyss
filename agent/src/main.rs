@@ -31,98 +31,116 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn hide_args() {
-    let stat_str = match std::fs::read_to_string("/proc/self/stat") {
+fn hide_args(argv0: &str) {
+    let maps = match std::fs::read_to_string("/proc/self/maps") {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[hide_args] failed to read /proc/self/stat: {}", e);
+            eprintln!("[hide_args] read maps: {}", e);
             return;
         }
     };
 
-    let close_paren = match stat_str.rfind(')') {
-        Some(p) => p,
-        None => {
-            eprintln!("[hide_args] no closing paren in stat");
-            return;
-        }
-    };
-
-    let after_comm = &stat_str[close_paren + 2..];
-    let fields: Vec<&str> = after_comm.split_whitespace().collect();
-    let n = fields.len();
-    eprintln!("[hide_args] stat fields after comm: {}, total stat chars: {}", n, stat_str.len());
-
-    if n < 5 {
-        eprintln!("[hide_args] too few fields: {}", n);
+    let marker = argv0.as_bytes();
+    if marker.is_empty() {
+        eprintln!("[hide_args] argv0 empty");
         return;
     }
 
-    let arg_start_str = fields[n - 5];
-    let arg_end_str = fields[n - 4];
-    eprintln!("[hide_args] arg_start_str={}, arg_end_str={}", arg_start_str, arg_end_str);
+    for line in maps.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        let perms = parts[1];
+        if !perms.contains('w') || !perms.contains('p') {
+            continue;
+        }
 
-    let arg_start: usize = match arg_start_str.parse() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("[hide_args] parse arg_start failed: {}", e);
+        let range: Vec<&str> = parts[0].split('-').collect();
+        if range.len() != 2 {
+            continue;
+        }
+        let start = match usize::from_str_radix(range[0], 16) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let end = match usize::from_str_radix(range[1], 16) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if end <= start || end - start > 8 * 1024 * 1024 {
+            continue;
+        }
+
+        let slice = unsafe { std::slice::from_raw_parts(start as *const u8, end - start) };
+        if let Some(offset) = slice.windows(marker.len()).position(|w| w == marker) {
+            let arg_start = start + offset;
+            let total;
+            let mut search = &slice[offset..];
+            let mut i = marker.len() + 1;
+            loop {
+                if i >= search.len() {
+                    total = i;
+                    break;
+                }
+                if search[i] == 0 && i + 1 < search.len() && search[i + 1] != 0 {
+                    i += 2;
+                    continue;
+                }
+                if search[i] == 0 && (i + 1 >= search.len() || search[i + 1] == 0) {
+                    total = i + 1;
+                    break;
+                }
+                i += 1;
+            }
+
+            eprintln!(
+                "[hide_args] found argv at 0x{:x}..0x{:x} ({} bytes)",
+                arg_start,
+                arg_start + total,
+                total
+            );
+
+            let argv_slice =
+                unsafe { std::slice::from_raw_parts_mut(arg_start as *mut u8, total) };
+            let before: String = argv_slice
+                .iter()
+                .take(total.min(80))
+                .map(|&b| if b == 0 { ' ' } else { b as char })
+                .collect();
+            eprintln!("[hide_args] before: {}", before.trim());
+
+            for byte in argv_slice.iter_mut() {
+                *byte = 0;
+            }
+            let name = b"rtragent";
+            let copy_len = name.len().min(argv_slice.len().saturating_sub(1));
+            argv_slice[..copy_len].copy_from_slice(&name[..copy_len]);
+            argv_slice[copy_len] = 0;
+
+            match std::fs::read("/proc/self/cmdline") {
+                Ok(cmdline) => {
+                    let display: String = cmdline
+                        .iter()
+                        .map(|&b| if b == 0 { ' ' } else { b as char })
+                        .collect();
+                    eprintln!("[hide_args] cmdline now: {}", display.trim());
+                }
+                Err(e) => eprintln!("[hide_args] verify cmdline: {}", e),
+            }
             return;
         }
-    };
-    let arg_end: usize = match arg_end_str.parse() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("[hide_args] parse arg_end failed: {}", e);
-            return;
-        }
-    };
-
-    if arg_start == 0 || arg_end <= arg_start {
-        eprintln!("[hide_args] bad range: start={} end={}", arg_start, arg_end);
-        return;
     }
-
-    let total = arg_end - arg_start;
-    eprintln!("[hide_args] argv range: 0x{:x}..0x{:x}, total={} bytes", arg_start, arg_end, total);
-
-    if total > 1024 * 1024 {
-        eprintln!("[hide_args] total too large ({}), bailing", total);
-        return;
-    }
-
-    let argv_slice = unsafe { std::slice::from_raw_parts_mut(arg_start as *mut u8, total) };
-    let first_arg_len = argv_slice.iter().position(|&b| b == 0).unwrap_or(total);
-    eprintln!("[hide_args] first arg before wipe: {:?}", &argv_slice[..first_arg_len.min(20)]);
-
-    for byte in argv_slice.iter_mut() {
-        *byte = 0;
-    }
-
-    let name = b"rtragent";
-    let copy_len = name.len().min(argv_slice.len().saturating_sub(1));
-    argv_slice[..copy_len].copy_from_slice(&name[..copy_len]);
-    argv_slice[copy_len] = 0;
-
-    let verify_len = argv_slice.iter().position(|&b| b == 0).unwrap_or(total);
-    eprintln!("[hide_args] after wipe: {:?}, total={}", &argv_slice[..verify_len.min(30)], verify_len);
-
-    match std::fs::read("/proc/self/cmdline") {
-        Ok(cmdline) => {
-            let display: String = cmdline.iter().map(|&b| if b == 0 { ' ' } else { b as char }).collect();
-            eprintln!("[hide_args] /proc/self/cmdline now: {}", display.trim());
-        }
-        Err(e) => {
-            eprintln!("[hide_args] verify cmdline failed: {}", e);
-        }
-    }
+    eprintln!("[hide_args] marker '{}' not found in any RW map", argv0);
 }
 
 #[cfg(not(target_os = "linux"))]
-fn hide_args() {}
+fn hide_args(_argv0: &str) {}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    hide_args();
+    let argv0 = args.first().cloned().unwrap_or_default();
+    hide_args(&argv0);
 
     if args.len() >= 2 && (args[1] == "-h" || args[1] == "--help") {
         eprintln!("rtragent - lightweight router agent");
