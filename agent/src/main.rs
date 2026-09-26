@@ -17,7 +17,7 @@ struct TunnelState {
 fn parse_arg(args: &[String], name: &str) -> Option<String> {
     let mut i = 0;
     while i < args.len() {
-        if args[i] == name || args[i] == &format!("-{}", name.chars().nth(1).unwrap_or('?')) {
+        if args[i] == name || args[i] == format!("-{}", name.chars().nth(1).unwrap_or('?')) {
             return args.get(i + 1).cloned();
         }
         i += 1;
@@ -62,7 +62,7 @@ fn main() {
 
     loop {
         eprintln!("[rtragent] connecting to {} as {}", server, name);
-        match TcpStream::connect(server) {
+        match TcpStream::connect(&server) {
             Ok(stream) => {
                 let _ = stream.set_nodelay(true);
 
