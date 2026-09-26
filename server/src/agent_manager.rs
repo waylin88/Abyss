@@ -8,21 +8,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-/// Configure aggressive TCP keepalive on a stream so that a dead
-/// connection (kill -9, power loss, cable cut) is detected within
-/// ~60 seconds instead of the OS default of 2–120 minutes.
+/// Set TCP keepalive so a dead connection (kill -9, power loss) is
+/// detected within ~12 minutes rather than the OS default of 2 hours.
+/// The 30-minute application heartbeat catches any remaining cases.
 fn set_tcp_keepalive(s: &TcpStream) {
-    // Clone the tokio TcpStream, then downgrade to std for socket2 access
-    if let Ok(std) = TcpStream::clone(s).into_std() {
-        let s2 = socket2::SockRef::from(&std);
-        // Idle 30s → probe every 10s → 3 probes → dead
-        let _ = s2.set_tcp_keepalive(
-            &socket2::TcpKeepalive::new()
-                .with_time(Duration::from_secs(30))
-                .with_interval(Duration::from_secs(10))
-                .with_retries(3),
-        );
-    }
+    let _ = s.set_keepalive(Some(Duration::from_secs(30)));
 }
 
 pub struct AgentManager {
