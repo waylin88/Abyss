@@ -30,75 +30,51 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
     None
 }
 
-/// Hide command-line arguments from `ps`/`top` etc. on Linux.
-///
-/// Directly zeroes out the raw argv string area in memory — exactly the
-/// same technique used by the mDNSResponder C code:
-///
-///   total = 0;
-///   for (i = 0; i < argc; i++) total += strlen(argv[i]) + 1;
-///   memset(argv[0], 0, total);
-///   strncpy(argv[0], label, total - 1);
-///
-/// Gets the argv strings address from `/proc/self/stat`, then writes
-/// zeros via a raw pointer.  The argv area lives on the process's own
-/// stack so no special privileges are needed.
 #[cfg(target_os = "linux")]
 fn hide_args() {
-    // ── 1. Find argv strings address range from /proc/self/stat ──
-    // arg_start = field 48, arg_end = field 49 (1‑indexed per kernel docs).
-    // After removing pid + comm (first 2 fields), they sit at indices 45/46.
-    let stat = match std::fs::read_to_string("/proc/self/stat") {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    let close_paren = match stat.rfind(')') {
-        Some(p) => p,
-        None => return,
-    };
-    let rest = &stat[close_paren + 2..];
-    let fields: Vec<&str> = rest.split_whitespace().collect();
-    let n = fields.len();
-
-    // Last 5 fields are ALWAYS present on every Linux kernel:
-    //   [n-5] arg_start → [n-4] arg_end → [n-3] env_start → [n-2] env_end → [n-1] exit_code
-    // Counting from the end is immune to kernel config differences that add
-    // or remove optional fields (e.g. CONFIG_TASK_DELAY_ACCT).
-    let arg_start = match fields.get(n - 5).and_then(|s| s.parse::<usize>().ok()) {
-        Some(v) if v != 0 => v,
-        _ => return,
-    };
-    let arg_end = match fields.get(n - 4).and_then(|s| s.parse::<usize>().ok()) {
-        Some(v) if v > arg_start => v,
-        _ => return,
-    };
-
-    // ── 2. Zero the entire argv string area ──
-    // This is the exact Rust equivalent of:
-    //   total = 0; for (i=0; i<argc; i++) total += strlen(argv[i]) + 1;
-    //   memset(argv[0], 0, total);
-    let len = (arg_end - arg_start).min(65536);
-    let argv_bytes = unsafe { std::slice::from_raw_parts_mut(arg_start as *mut u8, len) };
-    for byte in argv_bytes.iter_mut() {
-        *byte = 0;
+    let argc: isize = unsafe { libc::__libc_argc };
+    if argc <= 0 {
+        return;
+    }
+    let argv: *mut *mut libc::c_char = unsafe { libc::__libc_argv };
+    if argv.is_null() {
+        return;
     }
 
-    // ── 3. Write program name at the start ──
-    // This is the Rust equivalent of:
-    //   strncpy(argv[0], "rtragent", total - 1);
+    let mut total: usize = 0;
+    for i in 0..argc {
+        let p = unsafe { *argv.offset(i) };
+        if p.is_null() {
+            break;
+        }
+        let len = unsafe { libc::strlen(p) } as usize;
+        total += len + 1;
+    }
+    if total == 0 {
+        return;
+    }
+
+    unsafe {
+        libc::memset(*argv as *mut libc::c_void, 0, total);
+    }
+
     let name = b"rtragent";
-    let copy_len = name.len().min(argv_bytes.len().saturating_sub(1));
-    argv_bytes[..copy_len].copy_from_slice(&name[..copy_len]);
-    argv_bytes[copy_len] = 0;
+    let copy_len = name.len().min(total - 1);
+    unsafe {
+        libc::memcpy(
+            *argv as *mut libc::c_void,
+            name.as_ptr() as *const libc::c_void,
+            copy_len,
+        );
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
 fn hide_args() {}
 
 fn main() {
-    hide_args();
-
     let args: Vec<String> = env::args().collect();
+    hide_args();
 
     if args.len() >= 2 && (args[1] == "-h" || args[1] == "--help") {
         eprintln!("rtragent - lightweight router agent");
