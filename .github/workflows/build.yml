@@ -16,7 +16,7 @@ jobs:
         include:
           - job_name: rtrserver-x86_64
             binary: rtrserver
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             builder: cargo
           - job_name: rtrserver-aarch64
             binary: rtrserver
@@ -48,7 +48,7 @@ jobs:
 
           - job_name: rtragent-x86_64
             binary: rtragent
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             builder: cargo
           - job_name: rtragent-aarch64
             binary: rtragent
@@ -60,6 +60,12 @@ jobs:
         uses: actions/checkout@v4
 
       # ── native cargo build ──
+      - name: Install musl-tools (for x86_64-musl)
+        if: contains(matrix.target, 'musl') && matrix.builder == 'cargo'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
       - name: Install Rust (cargo/native)
         if: matrix.builder == 'cargo'
         uses: dtolnay/rust-toolchain@stable

@@ -125,11 +125,11 @@ impl AgentManager {
         };
 
         let mut result: Vec<AgentInfo> = online.into_iter().filter(|a| matches(a)).collect();
-        // Append offline agents that match (and are not already online with same id)
-        let online_ids: std::collections::HashSet<&str> =
-            result.iter().map(|a| a.id.as_str()).collect();
+        // Collect online IDs into owned strings to avoid borrow conflict
+        let online_ids: std::collections::HashSet<String> =
+            result.iter().map(|a| a.id.clone()).collect();
         for a in offline.iter() {
-            if matches(a) && !online_ids.contains(a.id.as_str()) {
+            if matches(a) && !online_ids.contains(&a.id) {
                 result.push(a.clone());
             }
         }
@@ -612,7 +612,7 @@ async fn handle_agent(
             name: name.clone(),
             addr: peer.to_string(),
             uptime_secs: 0,
-            token: provided_token.clone(),
+            token: provided_token.to_string(),
             online: false,
             last_seen,
         })
