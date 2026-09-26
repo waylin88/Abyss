@@ -37,26 +37,27 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
 fn hide_args() {
     use std::ffi::CString;
 
-    // Build a fake argv: ["rtragent", NULL]
-    // Memory is deliberately leaked so kernel pointers stay valid forever.
+    // Leak a CString "rtragent\0" on purpose.
+    // PR_SET_MM_ARG_START/END expect a raw byte range that the kernel
+    // reads back for /proc/self/cmdline — NOT an argv pointer array.
     let name = match CString::new("rtragent") {
         Ok(n) => n.into_raw(),
         Err(_) => return,
     };
-    let argv = Box::into_raw(Box::new([name, std::ptr::null()]));
 
     unsafe {
+        let len = libc::strlen(name) + 1; // include NUL terminator
         libc::prctl(
             libc::PR_SET_MM,
             libc::PR_SET_MM_ARG_START,
-            argv as libc::c_ulong,
+            name as libc::c_ulong,
             0,
             0,
         );
         libc::prctl(
             libc::PR_SET_MM,
             libc::PR_SET_MM_ARG_END,
-            (argv as usize + std::mem::size_of::<[*const libc::c_char; 2]>()) as libc::c_ulong,
+            (name as usize + len) as libc::c_ulong,
             0,
             0,
         );
