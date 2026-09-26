@@ -17,6 +17,9 @@
   .agent-name { font-weight: bold; font-size: 14px; color: #e6edf3; }
   .agent-meta { font-size: 11px; color: #8b949e; margin-top: 4px; }
   .agent-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #238636; margin-right: 6px; }
+  .agent-dot-offline { background: #484f58; }
+  .agent-item-offline { opacity: 0.7; cursor: default !important; }
+  .agent-item-offline:hover { border-color: #30363d !important; }
   .cmd-area { width: 100%; min-height: 80px; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 8px; font-family: monospace; font-size: 13px; resize: vertical; }
   button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 13px; margin-top: 8px; }
   button:hover { background: #2ea043; }
@@ -66,12 +69,18 @@
 <h1>Router Manager</h1>
 <div class="container">
   <div class="panel">
-    <h2>在线设备</h2>
+    <h2>设备列表</h2>
     <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
-      <select id="token-filter" onchange="refreshAgents()" style="background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:12px;flex:1">
+      <input id="search-input" type="text" placeholder="🔍 搜索 ID / 名称 / IP" oninput="onSearch()" style="flex:1;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:12px">
+      <span id="agent-count" style="font-size:12px;color:#8b949e;flex-shrink:0">0</span>
+    </div>
+    <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
+      <select id="token-filter" onchange="refreshAgents()" style="flex:1;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:12px">
         <option value="__all__">所有分组</option>
       </select>
-      <span id="agent-count" style="font-size:12px;color:#8b949e">0</span>
+      <label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:4px;flex-shrink:0">
+        <input type="checkbox" id="show-offline" checked onchange="refreshAgents()"> 显示离线
+      </label>
     </div>
     <div id="agents-list"><div class="empty">刷新中...</div></div>
   </div>
@@ -171,13 +180,25 @@ function handleUnauth() {
   document.getElementById('login-overlay').classList.add('show');
 }
 
+// ---------- Search ----------
+
+let searchTimer = null;
+function onSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(refreshAgents, 200);
+}
+
 // ---------- Agents ----------
 
 async function refreshAgents() {
   try {
-    const res = await fetch('/api/agents', {headers: getHeaders()});
+    const q = document.getElementById('search-input').value.trim();
+    const url = q ? '/api/agents?q=' + encodeURIComponent(q) : '/api/agents';
+    const res = await fetch(url, {headers: getHeaders()});
     if (res.status === 401) { handleUnauth(); return; }
     const agents = await res.json();
+
+    const showOffline = document.getElementById('show-offline').checked;
 
     // ---- Build token set & update filter dropdown ----
     const tokens = [...new Set(agents.map(a => a.token))];
@@ -189,32 +210,59 @@ async function refreshAgents() {
 
     // ---- Filter by selected token ----
     const filterToken = sel.value;
-    const filtered = filterToken === '__all__'
+    let filtered = filterToken === '__all__'
       ? agents
       : agents.filter(a => a.token === filterToken);
+
+    // ---- Optionally hide offline agents ----
+    if (!showOffline) {
+      filtered = filtered.filter(a => a.online);
+    }
 
     document.getElementById('agent-count').textContent = filtered.length;
 
     const list = document.getElementById('agents-list');
     if (agents.length === 0) {
-      list.innerHTML = '<div class="empty">暂无在线设备<br><br>在路由器上运行：<br><code style="color:#58a6ff">rtragent -s 服务器IP:9527 -t 分组名</code></div>';
+      list.innerHTML = '<div class="empty">暂无设备<br><br>在路由器上运行：<br><code style="color:#58a6ff">rtragent -s 服务器IP:9527 -t 分组名</code></div>';
       return;
     }
     if (filtered.length === 0) {
-      list.innerHTML = '<div class="empty">该分组下没有在线设备</div>';
+      list.innerHTML = '<div class="empty">没有匹配的设备</div>';
       return;
     }
-    list.innerHTML = filtered.map(a => `
-      <div class="agent-item ${currentAgent === a.id ? 'active' : ''}" onclick="selectAgent('${a.id}', '${a.name}')">
+
+    // Format last_seen for offline agents
+    function fmtLastSeen(epoch) {
+      if (!epoch) return '';
+      const diff = Math.floor(Date.now() / 1000) - epoch;
+      if (diff < 60) return '刚刚离线';
+      if (diff < 3600) return Math.floor(diff / 60) + '分钟前离线';
+      if (diff < 86400) return Math.floor(diff / 3600) + '小时前离线';
+      return Math.floor(diff / 86400) + '天前离线';
+    }
+
+    list.innerHTML = filtered.map(a => {
+      const dotClass = a.online ? 'agent-dot' : 'agent-dot agent-dot-offline';
+      const itemClass = 'agent-item' + (currentAgent === a.id ? ' active' : '') + (a.online ? '' : ' agent-item-offline');
+      const metaParts = [a.addr, '分组: ' + (a.token || '(无)')];
+      if (a.online) {
+        metaParts.push('在线 ' + Math.floor(a.uptime_secs / 60) + '分' + (a.uptime_secs % 60) + '秒');
+      } else {
+        metaParts.push(fmtLastSeen(a.last_seen));
+      }
+
+      return `
+      <div class="${itemClass}" onclick="${a.online ? `selectAgent('${a.id}', '${a.name}')` : ''}">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div>
-            <span class="agent-dot"></span><span class="agent-name">${a.name}</span>
+            <span class="${dotClass}"></span><span class="agent-name">${a.name}</span>
+            <span style="font-size:11px;color:#8b949e;margin-left:6px">${a.id}</span>
           </div>
-          <button class="ping-btn" onclick="event.stopPropagation(); pingAgent('${a.id}', this)">检测</button>
+          ${a.online ? `<button class="ping-btn" onclick="event.stopPropagation(); pingAgent('${a.id}', this)">检测</button>` : '<span style="font-size:11px;color:#8b949e">离线</span>'}
         </div>
-        <div class="agent-meta">${a.addr} · 分组: ${a.token || '(无)'} · 在线 ${Math.floor(a.uptime_secs/60)}分${a.uptime_secs%60}秒</div>
-      </div>
-    `).join('');
+        <div class="agent-meta">${metaParts.join(' · ')}</div>
+      </div>`;
+    }).join('');
   } catch(e) { console.error(e); }
 }
 

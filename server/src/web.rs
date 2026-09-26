@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Json},
     routing::{get, post},
@@ -114,14 +114,21 @@ async fn api_login(
     }
 }
 
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: Option<String>,
+}
+
 async fn list_agents(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<SearchQuery>,
 ) -> impl IntoResponse {
     if !check_auth(&headers, &state.password) {
         return unauth();
     }
-    (StatusCode::OK, Json(serde_json::json!(state.manager.list().await)))
+    let q = query.q.unwrap_or_default();
+    (StatusCode::OK, Json(serde_json::json!(state.manager.list_all(&q).await)))
 }
 
 #[derive(Deserialize)]

@@ -21,6 +21,8 @@ fn set_tcp_keepalive(s: &TcpStream) {
 pub struct AgentManager {
     /// token → id → AgentHandle
     agents: Mutex<HashMap<String, HashMap<String, AgentHandle>>>,
+    /// Recently disconnected agents (for offline list display)
+    offline_agents: Mutex<Vec<AgentInfo>>,
     next_id: AtomicU64,
     tunnels: Mutex<HashMap<String, TunnelHandle>>,
     pending_results: Mutex<HashMap<String, mpsc::Sender<ExecResult>>>,
@@ -68,6 +70,7 @@ impl AgentManager {
     pub fn new() -> Self {
         Self {
             agents: Mutex::new(HashMap::new()),
+            offline_agents: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(1),
             tunnels: Mutex::new(HashMap::new()),
             pending_results: Mutex::new(HashMap::new()),
@@ -97,10 +100,51 @@ impl AgentManager {
                     addr: v.addr.to_string(),
                     uptime_secs: v.connected_at.elapsed().as_secs(),
                     token: token.clone(),
+                    online: true,
+                    last_seen: 0,
                 });
             }
         }
         result
+    }
+
+    /// Return all agents (online + offline), optionally filtered by query string.
+    /// `query` matches against agent id or name (case-insensitive).
+    pub async fn list_all(&self, query: &str) -> Vec<AgentInfo> {
+        let online = self.list().await;
+        let offline = self.offline_agents.lock().await;
+
+        let query = query.trim().to_lowercase();
+        let matches = |info: &AgentInfo| -> bool {
+            if query.is_empty() {
+                return true;
+            }
+            info.id.to_lowercase().contains(&query)
+                || info.name.to_lowercase().contains(&query)
+                || info.addr.to_lowercase().contains(&query)
+        };
+
+        let mut result: Vec<AgentInfo> = online.into_iter().filter(|a| matches(a)).collect();
+        // Append offline agents that match (and are not already online with same id)
+        let online_ids: std::collections::HashSet<&str> =
+            result.iter().map(|a| a.id.as_str()).collect();
+        for a in offline.iter() {
+            if matches(a) && !online_ids.contains(a.id.as_str()) {
+                result.push(a.clone());
+            }
+        }
+        result
+    }
+
+    /// Save a disconnected agent to the offline history list.
+    pub async fn add_offline(&self, info: AgentInfo) {
+        let mut offline = self.offline_agents.lock().await;
+        // Remove previous record of the same agent
+        offline.retain(|a| a.id != info.id || a.token != info.token);
+        // Insert at the front (most recent first)
+        offline.insert(0, info);
+        // Cap at 200 entries to avoid unbounded memory
+        offline.truncate(200);
     }
 
     pub async fn list_forwards(&self) -> Vec<ForwardInfo> {
@@ -246,13 +290,17 @@ impl AgentManager {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 pub struct AgentInfo {
     pub id: String,
     pub name: String,
     pub addr: String,
     pub uptime_secs: u64,
     pub token: String,
+    /// true = online now, false = offline (in history list)
+    pub online: bool,
+    /// Unix epoch seconds for offline agents, 0 for online
+    pub last_seen: u64,
 }
 
 async fn read_line(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<String> {
@@ -552,6 +600,23 @@ async fn handle_agent(
     });
 
     let _ = tokio::join!(write_task, read_task);
+
+    // Save offline record before cleanup
+    let last_seen = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    manager
+        .add_offline(AgentInfo {
+            id: qualified_id.clone(),
+            name: name.clone(),
+            addr: peer.to_string(),
+            uptime_secs: 0,
+            token: provided_token.clone(),
+            online: false,
+            last_seen,
+        })
+        .await;
 
     // Cleanup on disconnect
     manager.unregister(&read_token, &qualified_id).await;
