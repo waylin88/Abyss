@@ -1,0 +1,8 @@
+[target.mipsel-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.mips-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.armv7-unknown-linux-musleabihf]
+rustflags = ["-C", "target-feature=+crt-static"]
