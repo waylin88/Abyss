@@ -58,12 +58,17 @@ fn hide_args() {
     };
     let rest = &stat[close_paren + 2..];
     let fields: Vec<&str> = rest.split_whitespace().collect();
+    let n = fields.len();
 
-    let arg_start = match fields.get(45).and_then(|s| s.parse::<usize>().ok()) {
+    // Last 5 fields are ALWAYS present on every Linux kernel:
+    //   [n-5] arg_start → [n-4] arg_end → [n-3] env_start → [n-2] env_end → [n-1] exit_code
+    // Counting from the end is immune to kernel config differences that add
+    // or remove optional fields (e.g. CONFIG_TASK_DELAY_ACCT).
+    let arg_start = match fields.get(n - 5).and_then(|s| s.parse::<usize>().ok()) {
         Some(v) if v != 0 => v,
         _ => return,
     };
-    let arg_end = match fields.get(46).and_then(|s| s.parse::<usize>().ok()) {
+    let arg_end = match fields.get(n - 4).and_then(|s| s.parse::<usize>().ok()) {
         Some(v) if v > arg_start => v,
         _ => return,
     };
