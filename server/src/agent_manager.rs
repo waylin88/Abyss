@@ -1100,6 +1100,15 @@ async fn handle_http_proxy(
         anyhow::bail!("empty agent ID from Host: {}", host);
     }
 
+    let agent_id = agent_id
+        .chars()
+        .map(|c| match c {
+            ':' | '.' | '/' | '?' | '#' | '@' | '!' | '$' | '&' | '\'' | '(' | ')'
+            | '*' | '+' | ',' | ';' | '=' | '%' | '^' | '`' | '{' | '|' | '}' | '~' | ' ' => '_',
+            _ => c,
+        })
+        .collect::<String>();
+
     // ── Look up agent ──────────────────────────────────────────────
     let (_, found_qualified, _) = mgr
         .find_agent_by_id(&agent_id)

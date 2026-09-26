@@ -172,8 +172,8 @@ async function loadConfig() {
 // ---------- Web Quick Access ----------
 
 function getWebUrl(agentId) {
-  if (!currentDomain) return null;
-  const prefix = agentId && agentId.includes(':') ? agentId.replace(/:/g, '_') : agentId;
+  if (!currentDomain || !agentId) return null;
+  const prefix = agentId.replace(/[:.]/g, '_');
   return `http://${prefix}.${currentDomain}:18080`;
 }
 
