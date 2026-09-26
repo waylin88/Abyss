@@ -31,37 +31,71 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
 }
 
 /// Hide command-line arguments from `ps`/`top` etc. on Linux.
-/// Replaces argv with just the program name, so credentials/tokens
-/// are not visible in process listings.
+///
+/// Uses two methods:
+/// 1. `prctl(PR_SET_MM, PR_SET_MM_ARG_END, …)` — shrink the kernel's cmdline
+///    window so only `"rtragent\0"` is visible.
+/// 2. Writes zeros directly to `/proc/self/mem` at the argv address read from
+///    `/proc/self/stat` — this is the belt-and-suspenders fallback.
+///
+/// Either method alone is sufficient; both together cover more kernel versions.
 #[cfg(target_os = "linux")]
 fn hide_args() {
-    use std::ffi::CString;
+    use std::io::{Seek, SeekFrom, Write};
 
-    // Leak a CString "rtragent\0" on purpose.
-    // PR_SET_MM_ARG_START/END expect a raw byte range that the kernel
-    // reads back for /proc/self/cmdline — NOT an argv pointer array.
-    let name = match CString::new("rtragent") {
-        Ok(n) => n.into_raw(),
-        Err(_) => return,
+    // ── 1. Find the in-memory argv range from /proc/self/stat ──
+    let (arg_start, arg_end) = match get_argv_range() {
+        Some(v) => v,
+        None => return,
     };
+    if arg_start == 0 || arg_end <= arg_start {
+        return;
+    }
+
+    // ── 2. Try prctl to shrink arg_end ──
+    // This tells the kernel to only read "rtragent\0" from the argv area.
+    // Requires CAP_SYS_RESOURCE (root). Silently ignore failure.
+    let prog_name = b"rtragent\0";
+    let new_arg_end = arg_start + prog_name.len(); // one past the NUL
 
     unsafe {
-        let len = libc::strlen(name) + 1; // include NUL terminator
-        libc::prctl(
-            libc::PR_SET_MM,
-            libc::PR_SET_MM_ARG_START,
-            name as libc::c_ulong,
-            0,
-            0,
-        );
         libc::prctl(
             libc::PR_SET_MM,
             libc::PR_SET_MM_ARG_END,
-            (name as usize + len) as libc::c_ulong,
+            new_arg_end as libc::c_ulong,
             0,
             0,
         );
     }
+
+    // ── 3. Directly overwrite argv memory via /proc/self/mem ──
+    // This works on Linux ≥ 3.2 even without prctl / capabilities.
+    if let Ok(mut mem) = std::fs::OpenOptions::new().write(true).open("/proc/self/mem") {
+        // Overwrite the whole arg area with zeros first
+        let zero_len = (arg_end - arg_start).min(65536); // safety cap
+        let zeroes = vec![0u8; zero_len];
+        if mem.seek(SeekFrom::Start(arg_start as u64)).is_ok() {
+            let _ = mem.write(&zeroes);
+        }
+        // Write the program name at the beginning
+        if mem.seek(SeekFrom::Start(arg_start as u64)).is_ok() {
+            let _ = mem.write(prog_name);
+        }
+    }
+}
+
+/// Parse `arg_start` and `arg_end` (fields 48 & 49) from `/proc/self/stat`.
+#[cfg(target_os = "linux")]
+fn get_argv_range() -> Option<(usize, usize)> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // The comm field is enclosed in parentheses and is the only field that
+    // may contain spaces. Find the last ')' to reliably locate its end.
+    let close_paren = stat.rfind(')')?;
+    let rest = &stat[close_paren + 2..]; // skip ") "
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let arg_start = fields.get(47)?.parse::<usize>().ok()?; // 0‑based index
+    let arg_end = fields.get(48)?.parse::<usize>().ok()?;
+    Some((arg_start, arg_end))
 }
 
 #[cfg(not(target_os = "linux"))]
