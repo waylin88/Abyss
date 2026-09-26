@@ -348,7 +348,7 @@ impl AgentManager {
         let agents = self.agents.lock().await;
         for (token, group) in agents.iter() {
             for (k, v) in group.iter() {
-                let normalized = k.replace(':', "_");
+                let normalized = k.replace(':', "_").replace('.', "_");
                 let suffix = format!(":{}", id);
                 if *k == id || k.ends_with(&suffix) || normalized == id {
                     return Some((token.clone(), k.clone(), AgentHandle {
@@ -949,19 +949,21 @@ async fn handle_http_proxy(
 
     // Extract agent ID from subdomain
     let agent_id = if domain.is_empty() {
-        // No domain configured — take first label before any dot
-        // e.g., "myrouter.example.com" -> "myrouter"
-        hostname.split('.').next().unwrap_or(hostname).to_string()
+        // No domain configured — use entire hostname as the agent ID.
+        // The hostname may contain dots from the token/ID (e.g. "v1.2_66779"),
+        // so we must not split on '.' here.
+        hostname.to_string()
     } else {
-        // Strip domain suffix to get subdomain
+        // Strip domain suffix to get the full subdomain prefix.
         let domain_dot = format!(".{}", domain);
         if hostname.ends_with(&domain_dot) {
             let subdomain = &hostname[..hostname.len() - domain_dot.len()];
-            // Take first label before any dot (in case of multi-level subdomain)
-            subdomain.split('.').next().unwrap_or(subdomain).to_string()
+            // Use the ENTIRE subdomain — it may contain dots from the agent ID
+            // (e.g., "v1.2_66779" where token is "v1.2").
+            subdomain.to_string()
         } else {
-            // Domain doesn't match — use entire hostname as ID (fallback)
-            hostname.split('.').next().unwrap_or(hostname).to_string()
+            // Domain doesn't match — fallback: use entire hostname
+            hostname.to_string()
         }
     };
 
@@ -969,17 +971,21 @@ async fn handle_http_proxy(
         anyhow::bail!("empty agent ID from Host: {}", host);
     }
 
-    // ── Check web agent restriction ───────────────────────────────
-    // Only the currently selected agent's web UI is accessible
-    if !mgr.check_web_agent(&agent_id).await {
-        anyhow::bail!("agent {} is not the currently selected web agent", agent_id);
-    }
-
     // ── Look up agent ──────────────────────────────────────────────
     let (_, found_qualified, _) = mgr
         .find_agent_by_id(&agent_id)
         .await
         .ok_or_else(|| anyhow::anyhow!("agent not found: {}", agent_id))?;
+
+    // ── Check web agent restriction ───────────────────────────────
+    // Only the currently selected agent's web UI is accessible.
+    // Use the qualified ID (with colon) for comparison.
+    if !mgr.check_web_agent(&found_qualified).await {
+        anyhow::bail!(
+            "agent {} is not the currently selected web agent",
+            found_qualified
+        );
+    }
 
     // ── Create tunnel to agent's port 80 ───────────────────────────
     let tunnel_id = format!("http-{}-{}", found_qualified, std::time::SystemTime::now()

@@ -26,8 +26,7 @@
   .agent-id-label { font-size: 11px; color: #8b949e; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex-shrink:1; min-width:0; }
   .agent-dot { flex-shrink:0; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #238636; }
   .agent-dot-offline { background: #484f58; }
-  .agent-item-offline { opacity: 0.7; cursor: default !important; }
-  .agent-item-offline:hover { border-color: #30363d !important; }
+  .agent-item-offline { opacity: 0.7; }
   .agent-list-ping { flex-shrink:0; }
   /* Horizontal detail panel — more breathing room */
   #detail-content { padding: 6px 0; }
@@ -346,7 +345,7 @@ async function refreshAgents() {
         ? `<span class="agent-list-ping"><button class="ping-btn" onclick="event.stopPropagation(); pingAgent('${a.id}', this)">检测</button></span>`
         : '<span class="agent-list-ping" style="font-size:11px;color:#8b949e">离线</span>';
 
-      return `<div class="${itemClass}" onclick="${a.online ? `selectAgent('${a.id}')` : ''}">
+      return `<div class="${itemClass}" onclick="selectAgent('${a.id}')">
         <span class="agent-item-left">
           <span class="${dotClass}"></span>
           <span class="agent-name">${a.name}</span>
