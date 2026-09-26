@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::{Query, State},
@@ -8,6 +10,7 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
+use tokio::sync::Mutex;
 
 use crate::agent_manager::AgentManager;
 
@@ -15,12 +18,26 @@ use crate::agent_manager::AgentManager;
 struct AppState {
     manager: Arc<AgentManager>,
     password: Arc<String>,
+    sessions: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 pub async fn run(manager: Arc<AgentManager>, addr: &str, password: &str) -> anyhow::Result<()> {
+    let sessions = Arc::new(Mutex::new(HashMap::new()));
+
+    // Spawn periodic session cleanup (every 30 minutes)
+    let cleanup_sessions = sessions.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+            let mut map = cleanup_sessions.lock().await;
+            map.retain(|_, expires| *expires > Instant::now());
+        }
+    });
+
     let state = AppState {
         manager,
         password: Arc::new(password.to_string()),
+        sessions,
     };
 
     let app = Router::new()
@@ -39,30 +56,71 @@ pub async fn run(manager: Arc<AgentManager>, addr: &str, password: &str) -> anyh
     Ok(())
 }
 
-// ---------- auth helper ----------
+// ---------- session & auth ----------
 
-fn check_auth(headers: &HeaderMap, password: &str) -> bool {
-    if password.is_empty() {
-        return true;
-    }
-    // Check Authorization header (Bearer token from JS)
-    if let Some(auth) = headers.get(header::AUTHORIZATION) {
+/// Generate a random-looking session token using time + atomic counter.
+fn generate_session_token() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let combined = (now as u64)
+        .wrapping_mul(3_141_592_653_589_793_239u64)
+        .wrapping_add(count);
+    format!("sess-{:016x}", combined)
+}
+
+async fn check_auth(headers: &HeaderMap, sessions: &Mutex<HashMap<String, Instant>>) -> bool {
+    let token = if let Some(auth) = headers.get(header::AUTHORIZATION) {
         if let Ok(auth_str) = auth.to_str() {
-            let expected = format!("Bearer {}", password);
-            if auth_str == expected {
-                return true;
+            if let Some(val) = auth_str.strip_prefix("Bearer ") {
+                val.trim()
+            } else {
+                // Try cookie fallback
+                if let Some(cookie) = headers.get(header::COOKIE) {
+                    if let Ok(cookie_str) = cookie.to_str() {
+                        let mut found = None;
+                        for part in cookie_str.split(';') {
+                            let part = part.trim();
+                            if let Some(val) = part.strip_prefix("token=") {
+                                found = Some(val.trim());
+                            }
+                        }
+                        found
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             }
+        } else {
+            None
         }
-    }
-    // Fallback: check cookie (auto-sent by browser)
-    if let Some(cookie) = headers.get(header::COOKIE) {
+    } else if let Some(cookie) = headers.get(header::COOKIE) {
         if let Ok(cookie_str) = cookie.to_str() {
+            let mut found = None;
             for part in cookie_str.split(';') {
                 let part = part.trim();
                 if let Some(val) = part.strip_prefix("token=") {
-                    return val == password;
+                    found = Some(val.trim());
                 }
             }
+            found
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(t) = token {
+        let map = sessions.lock().await;
+        if let Some(expires) = map.get(t) {
+            return *expires > Instant::now();
         }
     }
     false
@@ -91,9 +149,13 @@ async fn api_login(
     Json(req): Json<LoginReq>,
 ) -> impl IntoResponse {
     if req.password == *state.password {
+        let session_token = generate_session_token();
+        let mut map = state.sessions.lock().await;
+        map.insert(session_token.clone(), Instant::now() + Duration::from_secs(86400));
+
         let cookie = format!(
-            "token={}; Path=/; Max-Age=86400; SameSite=Lax",
-            &*state.password
+            "token={}; Path=/; Max-Age=86400; SameSite=Lax; HttpOnly",
+            session_token
         );
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -103,7 +165,7 @@ async fn api_login(
         (
             StatusCode::OK,
             headers,
-            Json(serde_json::json!({"ok": true, "token": &*state.password})),
+            Json(serde_json::json!({"ok": true, "token": session_token})),
         )
     } else {
         (
@@ -124,7 +186,7 @@ async fn list_agents(
     headers: HeaderMap,
     Query(query): Query<SearchQuery>,
 ) -> impl IntoResponse {
-    if !check_auth(&headers, &state.password) {
+    if !state.password.is_empty() && !check_auth(&headers, &state.sessions).await {
         return unauth();
     }
     let q = query.q.unwrap_or_default();
@@ -142,7 +204,7 @@ async fn exec_cmd(
     headers: HeaderMap,
     Json(req): Json<ExecReq>,
 ) -> impl IntoResponse {
-    if !check_auth(&headers, &state.password) {
+    if !state.password.is_empty() && !check_auth(&headers, &state.sessions).await {
         return unauth();
     }
     match state.manager.exec(&req.agent, &req.cmd).await {
@@ -178,7 +240,7 @@ async fn do_forward(
     headers: HeaderMap,
     Json(req): Json<ForwardReq>,
 ) -> impl IntoResponse {
-    if !check_auth(&headers, &state.password) {
+    if !state.password.is_empty() && !check_auth(&headers, &state.sessions).await {
         return unauth();
     }
     let name = req.agent_name.unwrap_or_default();
@@ -231,7 +293,7 @@ async fn stop_forward(
     headers: HeaderMap,
     Json(req): Json<StopForwardReq>,
 ) -> impl IntoResponse {
-    if !check_auth(&headers, &state.password) {
+    if !state.password.is_empty() && !check_auth(&headers, &state.sessions).await {
         return unauth();
     }
     match state.manager.stop_forward(&req.id).await {
@@ -250,7 +312,7 @@ async fn list_forwards(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if !check_auth(&headers, &state.password) {
+    if !state.password.is_empty() && !check_auth(&headers, &state.sessions).await {
         return unauth();
     }
     (StatusCode::OK, Json(serde_json::json!(state.manager.list_forwards().await)))
@@ -266,7 +328,7 @@ async fn api_ping(
     headers: HeaderMap,
     Json(req): Json<PingReq>,
 ) -> impl IntoResponse {
-    if !check_auth(&headers, &state.password) {
+    if !state.password.is_empty() && !check_auth(&headers, &state.sessions).await {
         return unauth();
     }
     let ok = state.manager.ping_agent(&req.agent).await;

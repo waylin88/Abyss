@@ -303,7 +303,7 @@ impl AgentManager {
 
     /// Find an agent by the raw ID (the `provided_id` from the agent).
     /// Searches across all tokens. Returns (token, qualified_id, handle).
-    /// Matches if qualified_id ends with `:{id}` or equals `id`.
+    /// Matches if qualified_id ends with `:{id}`, equals `id`, or the normalized (token_id) form equals `id`.
     pub async fn find_agent_by_id(
         &self,
         id: &str,
@@ -311,9 +311,9 @@ impl AgentManager {
         let agents = self.agents.lock().await;
         for (token, group) in agents.iter() {
             for (k, v) in group.iter() {
-                // Match: qualified_id == id (no token) or qualified_id ends with :{id} (has token)
+                let normalized = k.replace(':', "_");
                 let suffix = format!(":{}", id);
-                if *k == id || k.ends_with(&suffix) {
+                if *k == id || k.ends_with(&suffix) || normalized == id {
                     return Some((token.clone(), k.clone(), AgentHandle {
                         name: v.name.clone(),
                         addr: v.addr,

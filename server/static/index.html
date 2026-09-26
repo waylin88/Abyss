@@ -97,13 +97,24 @@
       <h2>端口映射</h2>
       <p style="font-size:12px;color:#8b949e;margin-bottom:8px">将路由器上的端口映射到公网服务器，外部可直接访问</p>
       <div class="fwd-form">
-        <input id="fwd-local" placeholder="本地端口" value="80">
+        <input id="fwd-local" placeholder="本地端口" value="23">
         <span style="color:#8b949e">→ 服务器端口</span>
-        <input id="fwd-server" placeholder="服务器端口" value="18080">
+        <input id="fwd-server" placeholder="服务器端口" value="10023">
         <button onclick="doForward()">创建映射</button>
       </div>
       <p style="font-size:11px;color:#8b949e;margin-top:6px">
         映射后，外部访问 http://服务器IP:端口 即可到达路由器对应端口
+      </p>
+    </div>
+    <div class="panel section">
+      <h2>Web快速访问</h2>
+      <p style="font-size:12px;color:#8b949e;margin-bottom:8px">通过 "token_id.域名:18080" 直接访问客户端Web管理界面</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+        <input id="domain-input" type="text" placeholder="主域名 (如 dome.com)" style="flex:1;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:13px">
+        <button onclick="saveDomain()" style="margin:0">保存</button>
+      </div>
+      <p style="font-size:11px;color:#8b949e;margin-top:6px">
+        服务器需配置泛域名解析 *.dome.com → 服务器IP，并启动时设置 --http-proxy-domain dome.com
       </p>
     </div>
     <div class="panel section" id="forwards-panel">
@@ -117,6 +128,25 @@
 let currentAgent = null;
 let currentAgentName = '';
 let authToken = null;
+
+// Domain config
+document.addEventListener('DOMContentLoaded', () => {
+  const saved = localStorage.getItem('httpDomain');
+  if (saved) document.getElementById('domain-input').value = saved;
+});
+
+function saveDomain() {
+  const val = document.getElementById('domain-input').value.trim();
+  localStorage.setItem('httpDomain', val);
+  alert('域名已保存：' + (val || '(空，使用IP访问)'));
+}
+
+function getWebUrl(agentId) {
+  const domain = document.getElementById('domain-input').value.trim();
+  if (!domain) return null;
+  const prefix = agentId.includes(':') ? agentId.replace(/:/g, '_') : agentId;
+  return `http://${prefix}.${domain}:18080`;
+}
 
 function getHeaders() {
   const h = {'Content-Type': 'application/json'};
@@ -247,6 +277,11 @@ async function refreshAgents() {
       const metaParts = [a.addr, '分组: ' + (a.token || '(无)')];
       if (a.online) {
         metaParts.push('在线 ' + Math.floor(a.uptime_secs / 60) + '分' + (a.uptime_secs % 60) + '秒');
+        // Web quick access link
+        const webUrl = getWebUrl(a.id);
+        if (webUrl) {
+          metaParts.push(`<a href="${webUrl}" target="_blank" style="color:#58a6ff;text-decoration:underline">Web访问</a>`);
+        }
       } else {
         metaParts.push(fmtLastSeen(a.last_seen));
       }
@@ -258,7 +293,9 @@ async function refreshAgents() {
             <span class="${dotClass}"></span><span class="agent-name">${a.name}</span>
             <span style="font-size:11px;color:#8b949e;margin-left:6px">${a.id}</span>
           </div>
-          ${a.online ? `<button class="ping-btn" onclick="event.stopPropagation(); pingAgent('${a.id}', this)">检测</button>` : '<span style="font-size:11px;color:#8b949e">离线</span>'}
+          <div style="display:flex;gap:6px;align-items:center">
+            ${a.online ? `<button class="ping-btn" onclick="event.stopPropagation(); pingAgent('${a.id}', this)">检测</button>` : '<span style="font-size:11px;color:#8b949e">离线</span>'}
+          </div>
         </div>
         <div class="agent-meta">${metaParts.join(' · ')}</div>
       </div>`;
