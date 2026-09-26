@@ -75,10 +75,8 @@ jobs:
       - name: Build (musl-cross docker)
         if: matrix.builder == 'musl-cross'
         run: |
-          docker run --rm -v $PWD:/home/rust/src ${{ matrix.docker_image}} \
-            bash -c "cargo build --release -p ${{ matrix.binary}} --target ${{ matrix.target}} && \
-                     musl-strip target/${{ matrix.target}}/release/${{ matrix.binary}} || \
-                     strip target/${{ matrix.target}}/release/${{ matrix.binary}} || true"
+          docker run --rm -v $PWD:/home/rust/src ${{ matrix.docker_image }} \
+            bash -c "cargo build --release -p ${{ matrix.binary }} --target ${{ matrix.target }}"
 
       - name: Rename & Verify
         run: |
