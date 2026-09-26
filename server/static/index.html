@@ -34,6 +34,11 @@
   .fwd-item .right { margin-left: 8px; }
   .fwd-item .right button { margin: 0; padding: 4px 10px; font-size: 12px; }
   .fwd-meta { font-size: 11px; color: #8b949e; margin-top: 2px; }
+  .ping-btn { background: #30363d; color: #c9d1d9; border: 1px solid #484f58; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 11px; margin: 0; }
+  .ping-btn:hover { background: #484f58; }
+  .ping-btn:disabled { opacity: 0.6; cursor: default; }
+  .ping-ok { background: #238636 !important; border-color: #2ea043 !important; color: #fff !important; }
+  .ping-fail { background: #da3633 !important; border-color: #f85149 !important; color: #fff !important; }
   /* Login overlay */
   #login-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 999; align-items: center; justify-content: center; }
   #login-overlay.show { display: flex; }
@@ -103,10 +108,10 @@
 let currentAgent = null;
 let currentAgentName = '';
 let authToken = null;
-let needLogin = false;
 
 function getHeaders() {
   const h = {'Content-Type': 'application/json'};
+  // auth cookie is auto-sent by browser; only set Bearer when we have it in memory
   if (authToken) h['Authorization'] = 'Bearer ' + authToken;
   return h;
 }
@@ -147,20 +152,23 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function checkNeedLogin() {
-  // Try to fetch agents — if 401, show login
+  // Cookie is auto-sent, try API directly
   try {
-    const res = await fetch('/api/agents', {headers: getHeaders()});
+    const res = await fetch('/api/agents', {headers: {'Content-Type': 'application/json'}});
     if (res.status === 401) {
-      needLogin = true;
       document.getElementById('login-overlay').classList.add('show');
     } else {
-      // No password needed, start normally
       refreshAgents();
       refreshForwards();
     }
   } catch(e) {
-    // Offline, will retry
+    // offline — will retry on next interval
   }
+}
+
+function handleUnauth() {
+  authToken = null;
+  document.getElementById('login-overlay').classList.add('show');
 }
 
 // ---------- Agents ----------
@@ -168,7 +176,7 @@ async function checkNeedLogin() {
 async function refreshAgents() {
   try {
     const res = await fetch('/api/agents', {headers: getHeaders()});
-    if (res.status === 401) { needLogin = true; document.getElementById('login-overlay').classList.add('show'); return; }
+    if (res.status === 401) { handleUnauth(); return; }
     const agents = await res.json();
 
     // ---- Build token set & update filter dropdown ----
@@ -198,11 +206,46 @@ async function refreshAgents() {
     }
     list.innerHTML = filtered.map(a => `
       <div class="agent-item ${currentAgent === a.id ? 'active' : ''}" onclick="selectAgent('${a.id}', '${a.name}')">
-        <span class="agent-dot"></span><span class="agent-name">${a.name}</span>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <span class="agent-dot"></span><span class="agent-name">${a.name}</span>
+          </div>
+          <button class="ping-btn" onclick="event.stopPropagation(); pingAgent('${a.id}', this)">检测</button>
+        </div>
         <div class="agent-meta">${a.addr} · 分组: ${a.token || '(无)'} · 在线 ${Math.floor(a.uptime_secs/60)}分${a.uptime_secs%60}秒</div>
       </div>
     `).join('');
   } catch(e) { console.error(e); }
+}
+
+async function pingAgent(agentId, btn) {
+  const orig = btn.textContent;
+  btn.textContent = '检测中…';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/ping', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({agent: agentId})
+    });
+    if (res.status === 401) { handleUnauth(); return; }
+    const data = await res.json();
+    if (data.ok) {
+      btn.textContent = '✓ 在线';
+      btn.className = 'ping-btn ping-ok';
+    } else {
+      btn.textContent = '✗ 离线';
+      btn.className = 'ping-btn ping-fail';
+    }
+  } catch(e) {
+    btn.textContent = '✗ 失败';
+    btn.className = 'ping-btn ping-fail';
+  }
+  setTimeout(() => {
+    btn.textContent = orig;
+    btn.className = 'ping-btn';
+    btn.disabled = false;
+  }, 3000);
 }
 
 function selectAgent(id, name) {

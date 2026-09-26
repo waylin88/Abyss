@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 pub struct AgentManager {
     /// token → id → AgentHandle
@@ -15,6 +15,8 @@ pub struct AgentManager {
     tunnels: Mutex<HashMap<String, TunnelHandle>>,
     pending_results: Mutex<HashMap<String, mpsc::Sender<ExecResult>>>,
     forwards: Mutex<HashMap<String, ForwardHandle>>,
+    /// Manual ping awaits — keyed by agent_id
+    pending_pings: Mutex<HashMap<String, oneshot::Sender<bool>>>,
 }
 
 pub struct AgentHandle {
@@ -60,6 +62,7 @@ impl AgentManager {
             tunnels: Mutex::new(HashMap::new()),
             pending_results: Mutex::new(HashMap::new()),
             forwards: Mutex::new(HashMap::new()),
+            pending_pings: Mutex::new(HashMap::new()),
         }
     }
 
@@ -203,6 +206,33 @@ impl AgentManager {
             .get(token)
             .map(|g| g.contains_key(id))
             .unwrap_or(false)
+    }
+
+    /// Manually ping an agent to check if it's alive.
+    /// Returns `true` if agent responded with PONG within 30 seconds.
+    pub async fn ping_agent(&self, agent_id: &str) -> bool {
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pings = self.pending_pings.lock().await;
+            pings.insert(agent_id.to_string(), tx);
+        }
+
+        // Send PING
+        if self.send_to_agent(agent_id, b"PING\n".to_vec()).await.is_err() {
+            let mut pings = self.pending_pings.lock().await;
+            pings.remove(agent_id);
+            return false;
+        }
+
+        // Wait for PONG with 30s timeout
+        match tokio::time::timeout(Duration::from_secs(30), rx).await {
+            Ok(Ok(true)) => true,
+            _ => {
+                let mut pings = self.pending_pings.lock().await;
+                pings.remove(agent_id);
+                false
+            }
+        }
     }
 }
 
@@ -356,7 +386,22 @@ async fn handle_agent(
         let mut buf: Vec<u8> = Vec::with_capacity(4096);
         let mut tmp = [0u8; 4096];
 
+        // ── Heartbeat state ──────────────────────────────────────────
+        // Server sends PING every 30 min and expects PONG within 60 s.
+        let mut ping_sent: Option<Instant> = None; // when PING was sent
+        let mut next_hb: tokio::time::Instant =
+            tokio::time::Instant::now() + Duration::from_secs(30 * 60);
+
         loop {
+            // ── Heartbeat timeout check (before reading) ──────────────
+            if let Some(sent_at) = ping_sent {
+                if sent_at.elapsed() > Duration::from_secs(60) {
+                    eprintln!("[server] heartbeat timeout for {}", read_agent_id);
+                    return; // disconnect
+                }
+            }
+
+            // ── Find next complete line ───────────────────────────────
             let pos = loop {
                 if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     break pos;
@@ -368,16 +413,38 @@ async fn handle_agent(
                     );
                     return;
                 }
-                match reader.read(&mut tmp).await {
-                    Ok(0) => return,
-                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                    Err(e) => {
-                        eprintln!("[server] {} read error: {}", read_agent_id, e);
+
+                // Wait for data OR heartbeat tick
+                tokio::select! {
+                    result = reader.read(&mut tmp) => {
+                        match result {
+                            Ok(0) => return,
+                            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                            Err(e) => {
+                                eprintln!("[server] {} read error: {}", read_agent_id, e);
+                                return;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep_until(next_hb) => {
+                        if read_mgr.send_to_agent(&read_agent_id, b"PING\n".to_vec()).await.is_err() {
+                            return;
+                        }
+                        ping_sent = Some(Instant::now());
+                        next_hb = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
+                    }
+                }
+
+                // Re-check heartbeat timeout after waking
+                if let Some(sent_at) = ping_sent {
+                    if sent_at.elapsed() > Duration::from_secs(60) {
+                        eprintln!("[server] heartbeat timeout for {}", read_agent_id);
                         return;
                     }
                 }
             };
 
+            // ── Process one complete line ─────────────────────────────
             let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
             let line = String::from_utf8_lossy(&line_bytes)
                 .trim_end_matches('\n')
@@ -390,7 +457,16 @@ async fn handle_agent(
                         .send_to_agent(&read_agent_id, b"PONG\n".to_vec())
                         .await;
                 }
-                Some("PONG") => {}
+                Some("PONG") => {
+                    // ── Clear heartbeat ───────────────────────────
+                    ping_sent = None;
+                    next_hb = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
+                    // ── Resolve manual ping if any ────────────────
+                    let mut pings = read_mgr.pending_pings.lock().await;
+                    if let Some(sender) = pings.remove(&read_agent_id) {
+                        let _ = sender.send(true);
+                    }
+                }
                 Some("EXEC_RESULT") => {
                     if parts.len() >= 3 {
                         let op_id = parts[1].to_string();

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Json},
     routing::{get, post},
     Router,
@@ -28,6 +28,7 @@ pub async fn run(manager: Arc<AgentManager>, addr: &str, password: &str) -> anyh
         .route("/api/login", post(api_login))
         .route("/api/agents", get(list_agents))
         .route("/api/exec", post(exec_cmd))
+        .route("/api/ping", post(api_ping))
         .route("/api/forward", post(do_forward))
         .route("/api/forward/stop", post(stop_forward))
         .route("/api/forwards", get(list_forwards))
@@ -44,10 +45,24 @@ fn check_auth(headers: &HeaderMap, password: &str) -> bool {
     if password.is_empty() {
         return true;
     }
-    if let Some(auth) = headers.get("authorization") {
+    // Check Authorization header (Bearer token from JS)
+    if let Some(auth) = headers.get(header::AUTHORIZATION) {
         if let Ok(auth_str) = auth.to_str() {
             let expected = format!("Bearer {}", password);
-            return auth_str == expected;
+            if auth_str == expected {
+                return true;
+            }
+        }
+    }
+    // Fallback: check cookie (auto-sent by browser)
+    if let Some(cookie) = headers.get(header::COOKIE) {
+        if let Ok(cookie_str) = cookie.to_str() {
+            for part in cookie_str.split(';') {
+                let part = part.trim();
+                if let Some(val) = part.strip_prefix("token=") {
+                    return val == password;
+                }
+            }
         }
     }
     false
@@ -76,13 +91,24 @@ async fn api_login(
     Json(req): Json<LoginReq>,
 ) -> impl IntoResponse {
     if req.password == *state.password {
+        let cookie = format!(
+            "token={}; Path=/; Max-Age=86400; SameSite=Lax",
+            &*state.password
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::SET_COOKIE,
+            HeaderValue::from_str(&cookie).unwrap(),
+        );
         (
             StatusCode::OK,
+            headers,
             Json(serde_json::json!({"ok": true, "token": &*state.password})),
         )
     } else {
         (
             StatusCode::UNAUTHORIZED,
+            HeaderMap::new(),
             Json(serde_json::json!({"ok": false, "err": "密码错误"})),
         )
     }
@@ -200,4 +226,21 @@ async fn list_forwards(
         return unauth();
     }
     (StatusCode::OK, Json(serde_json::json!(state.manager.list_forwards().await)))
+}
+
+#[derive(Deserialize)]
+struct PingReq {
+    agent: String,
+}
+
+async fn api_ping(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<PingReq>,
+) -> impl IntoResponse {
+    if !check_auth(&headers, &state.password) {
+        return unauth();
+    }
+    let ok = state.manager.ping_agent(&req.agent).await;
+    (StatusCode::OK, Json(serde_json::json!({"ok": ok})))
 }
