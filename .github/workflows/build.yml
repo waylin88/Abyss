@@ -22,9 +22,17 @@ jobs:
             binary: rtrserver
             target: aarch64-unknown-linux-gnu
             cross: true
+          - job_name: rtragent-mips
+            binary: rtragent
+            target: mips-unknown-linux-musl
+            cross: true
           - job_name: rtragent-mipsel
             binary: rtragent
             target: mipsel-unknown-linux-musl
+            cross: true
+          - job_name: rtragent-armv7
+            binary: rtragent
+            target: armv7-unknown-linux-musleabihf
             cross: true
           - job_name: rtragent-x86_64
             binary: rtragent
