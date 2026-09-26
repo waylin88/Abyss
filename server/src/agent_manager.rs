@@ -12,7 +12,10 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 /// detected within ~12 minutes rather than the OS default of 2 hours.
 /// The 30-minute application heartbeat catches any remaining cases.
 fn set_tcp_keepalive(s: &TcpStream) {
-    let _ = s.set_keepalive(Some(Duration::from_secs(30)));
+    use socket2::{SockRef, TcpKeepalive};
+    let sock_ref = SockRef::from(s);
+    let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(30));
+    let _ = sock_ref.set_tcp_keepalive(&keepalive);
 }
 
 pub struct AgentManager {
