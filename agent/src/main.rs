@@ -20,16 +20,25 @@ fn main() {
     if args.len() >= 2 && (args[1] == "-h" || args[1] == "--help") {
         eprintln!("rtragent - lightweight router agent");
         eprintln!();
-        eprintln!("USAGE: rtragent <server_addr> [token] [name]");
+        eprintln!("USAGE: rtragent <server_addr> [token] [name] [id]");
+        eprintln!();
+        eprintln!("ARGS:");
+        eprintln!("  server_addr   Server address (default: 127.0.0.1:9527)");
+        eprintln!("  token         Auth token (optional)");
+        eprintln!("  name          Agent display name (default: router)");
+        eprintln!("  id            Unique device ID, server uses it to identify");
+        eprintln!("                this agent across reconnections (optional).");
+        eprintln!("                If not set, server generates one from name+port.");
         eprintln!();
         eprintln!("EXAMPLE:");
-        eprintln!("    rtragent 1.2.3.4:9527 mysecret rt-a1b2");
+        eprintln!("    rtragent 1.2.3.4:9527 mysecret rt-a1b2 00:11:22:33:44:55");
         return;
     }
 
     let server = args.get(1).map(|s| s.as_str()).unwrap_or("127.0.0.1:9527");
     let token = args.get(2).map(|s| s.as_str()).unwrap_or("");
     let name = args.get(3).map(|s| s.as_str()).unwrap_or("router");
+    let id = args.get(4).map(|s| s.as_str()).unwrap_or("");
 
     loop {
         eprintln!("[rtragent] connecting to {} as {}", server, name);
@@ -38,7 +47,11 @@ fn main() {
                 let _ = stream.set_nodelay(true);
 
                 let mut s = stream;
-                let hello = format!("HELLO {} {}\n", name, token);
+                let hello = if id.is_empty() {
+                    format!("HELLO {} {}\n", name, token)
+                } else {
+                    format!("HELLO {} {} {}\n", name, id, token)
+                };
                 if s.write_all(hello.as_bytes()).is_err() {
                     thread::sleep(Duration::from_secs(3));
                     continue;

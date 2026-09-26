@@ -156,12 +156,20 @@ async fn handle_agent(
     let mut hello_buf: Vec<u8> = Vec::with_capacity(256);
     let line = read_line(&mut socket, &mut hello_buf).await?;
 
-    let parts: Vec<&str> = line.trim().splitn(3, ' ').collect();
+    let parts: Vec<&str> = line.trim().splitn(4, ' ').collect();
     if parts.len() < 2 || parts[0] != "HELLO" {
         anyhow::bail!("invalid handshake: {}", line.trim());
     }
     let name = parts[1].to_string();
-    let provided_token = if parts.len() > 2 { parts[2] } else { "" };
+
+    // New protocol: HELLO <name> <id> <token>
+    // Old protocol: HELLO <name> <token>
+    let (agent_id, provided_token) = if parts.len() >= 4 {
+        (parts[2].to_string(), parts[3])
+    } else {
+        // backward compat: use name as fallback id
+        (name.clone(), if parts.len() > 2 { parts[2] } else { "" })
+    };
 
     if !token.is_empty() && provided_token != token {
         eprintln!("[server] agent {} rejected (bad token) from {}", name, peer);
@@ -169,7 +177,12 @@ async fn handle_agent(
         return Ok(());
     }
 
-    let agent_id = format!("{}-{}", name, peer.port());
+    // If agent with same ID already exists, old session will be replaced
+    // when we call register() (HashMap::insert replaces old entry).
+    if manager.agents.lock().await.contains_key(&agent_id) {
+        println!("[server] agent {} reconnecting, will replace old session", agent_id);
+    }
+
     println!("[server] agent joined: id={} name={} addr={}", agent_id, name, peer);
 
     let (reader, mut writer) = socket.into_split();
