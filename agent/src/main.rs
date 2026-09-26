@@ -30,7 +30,45 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
     None
 }
 
+/// Hide command-line arguments from `ps`/`top` etc. on Linux.
+/// Replaces argv with just the program name, so credentials/tokens
+/// are not visible in process listings.
+#[cfg(target_os = "linux")]
+fn hide_args() {
+    use std::ffi::CString;
+
+    // Build a fake argv: ["rtragent", NULL]
+    // Memory is deliberately leaked so kernel pointers stay valid forever.
+    let name = match CString::new("rtragent") {
+        Ok(n) => n.into_raw(),
+        Err(_) => return,
+    };
+    let argv = Box::into_raw(Box::new([name, std::ptr::null()]));
+
+    unsafe {
+        libc::prctl(
+            libc::PR_SET_MM,
+            libc::PR_SET_MM_ARG_START,
+            argv as libc::c_ulong,
+            0,
+            0,
+        );
+        libc::prctl(
+            libc::PR_SET_MM,
+            libc::PR_SET_MM_ARG_END,
+            (argv as usize + std::mem::size_of::<[*const libc::c_char; 2]>()) as libc::c_ulong,
+            0,
+            0,
+        );
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn hide_args() {}
+
 fn main() {
+    hide_args();
+
     let args: Vec<String> = env::args().collect();
 
     if args.len() >= 2 && (args[1] == "-h" || args[1] == "--help") {
