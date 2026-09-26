@@ -76,13 +76,14 @@ impl AgentManager {
     pub async fn list(&self) -> Vec<AgentInfo> {
         let agents = self.agents.lock().await;
         let mut result = Vec::new();
-        for (_token, group) in agents.iter() {
+        for (token, group) in agents.iter() {
             for (k, v) in group.iter() {
                 result.push(AgentInfo {
                     id: k.clone(),
                     name: v.name.clone(),
                     addr: v.addr.to_string(),
                     uptime_secs: v.connected_at.elapsed().as_secs(),
+                    token: token.clone(),
                 });
             }
         }
@@ -211,6 +212,7 @@ pub struct AgentInfo {
     pub name: String,
     pub addr: String,
     pub uptime_secs: u64,
+    pub token: String,
 }
 
 async fn read_line(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<String> {
@@ -233,7 +235,8 @@ async fn read_line(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<
 pub async fn run_agent_listener(
     manager: Arc<AgentManager>,
     addr: &str,
-    token: &str,
+    allow_tokens: Vec<String>,
+    block_tokens: Vec<String>,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     println!("[server] agent listener ready on {}", addr);
@@ -241,9 +244,10 @@ pub async fn run_agent_listener(
     loop {
         let (socket, peer) = listener.accept().await?;
         let mgr = manager.clone();
-        let token = token.to_string();
+        let allow = allow_tokens.clone();
+        let block = block_tokens.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_agent(mgr, socket, peer, &token).await {
+            if let Err(e) = handle_agent(mgr, socket, peer, &allow, &block).await {
                 eprintln!("[server] agent session error ({}): {}", peer, e);
             }
         });
@@ -254,7 +258,8 @@ async fn handle_agent(
     manager: Arc<AgentManager>,
     mut socket: TcpStream,
     peer: SocketAddr,
-    server_token: &str,
+    allow_tokens: &[String],
+    block_tokens: &[String],
 ) -> anyhow::Result<()> {
     let mut hello_buf: Vec<u8> = Vec::with_capacity(256);
     let line = read_line(&mut socket, &mut hello_buf).await?;
@@ -274,22 +279,30 @@ async fn handle_agent(
         (name.clone(), if parts.len() > 2 { parts[2] } else { "" })
     };
 
-    // Token validation: if server_token is non-empty, client must match
-    if !server_token.is_empty() && provided_token != server_token {
+    // ---- Token allow / block list check ----
+    if !allow_tokens.is_empty() && !allow_tokens.contains(&provided_token.to_string()) {
         eprintln!(
-            "[server] agent {} rejected (bad token) from {}",
-            name, peer
+            "[server] agent {} rejected: token {:?} not in allow list (from {})",
+            name, provided_token, peer
         );
-        let _ = socket.write_all(b"REJECT bad token\n").await;
+        let _ = socket.write_all(b"REJECT token not allowed\n").await;
+        return Ok(());
+    }
+    if !block_tokens.is_empty() && block_tokens.contains(&provided_token.to_string()) {
+        eprintln!(
+            "[server] agent {} rejected: token {:?} is blocked (from {})",
+            name, provided_token, peer
+        );
+        let _ = socket.write_all(b"REJECT token blocked\n").await;
         return Ok(());
     }
 
-    // Qualified ID = "{token}:{id}" ensures isolation across different tokens.
-    // When token is empty, qualified_id = "{id}" for backward compat.
-    let qualified_id = AgentManager::qualified_id(server_token, &agent_id);
+    // Qualified ID = "{provided_token}:{agent_id}" ensures isolation across groups.
+    // When token is empty, qualified_id = "{agent_id}" for backward compat.
+    let qualified_id = AgentManager::qualified_id(&provided_token, &agent_id);
 
     if manager
-        .contains_agent(server_token, &qualified_id)
+        .contains_agent(&provided_token, &qualified_id)
         .await
     {
         println!(
@@ -303,7 +316,11 @@ async fn handle_agent(
         qualified_id,
         name,
         peer,
-        if server_token.is_empty() { None } else { Some(server_token) }
+        if provided_token.is_empty() {
+            None
+        } else {
+            Some(&provided_token)
+        }
     );
 
     let (reader, mut writer) = socket.into_split();
@@ -311,7 +328,7 @@ async fn handle_agent(
 
     manager
         .register(
-            server_token,
+            &provided_token,
             qualified_id.clone(),
             AgentHandle {
                 name: name.clone(),
@@ -333,7 +350,7 @@ async fn handle_agent(
 
     let read_mgr = manager.clone();
     let read_agent_id = qualified_id.clone();
-    let read_server_token = server_token.to_string();
+    let read_token = provided_token.clone();
     let read_task = tokio::spawn(async move {
         let mut reader = reader;
         let mut buf: Vec<u8> = Vec::with_capacity(4096);
@@ -448,15 +465,13 @@ async fn handle_agent(
     let _ = tokio::join!(write_task, read_task);
 
     // Cleanup on disconnect
-    manager
-        .unregister(&read_server_token, &qualified_id)
-        .await;
+    manager.unregister(&read_token, &qualified_id).await;
     let mut tunnels = manager.tunnels.lock().await;
     tunnels.retain(|_, t| t.agent_id != qualified_id);
     drop(tunnels);
     manager.stop_all_forwards_for_agent(&qualified_id).await;
 
-    println!("[server] agent left: {}", qualified_id);
+    println!("[server] agent left: {} (token: {:?})", qualified_id, read_token);
     Ok(())
 }
 
