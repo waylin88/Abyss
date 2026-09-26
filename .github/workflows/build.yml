@@ -70,7 +70,7 @@ jobs:
       - name: Build (cross)
         if: matrix.cross == true
         env:
-          RUSTFLAGS: "-C target-feature=+crt-static -C link-arg=-static"
+          RUSTFLAGS: "-C target-feature=+crt-static"
         run: cross build --release -p ${{ matrix.binary }} --target ${{ matrix.target }} -Zbuild-std=std,core,alloc
 
       - name: Strip & Rename
