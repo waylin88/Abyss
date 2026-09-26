@@ -92,7 +92,7 @@ async fn list_agents(
     if !check_auth(&headers, &state.password) {
         return unauth();
     }
-    Json(state.manager.list().await)
+    (StatusCode::OK, Json(state.manager.list().await))
 }
 
 #[derive(Deserialize)]
@@ -205,5 +205,5 @@ async fn list_forwards(
     if !check_auth(&headers, &state.password) {
         return unauth();
     }
-    Json(state.manager.list_forwards().await)
+    (StatusCode::OK, Json(state.manager.list_forwards().await))
 }
