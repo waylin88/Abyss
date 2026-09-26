@@ -24,7 +24,7 @@ jobs:
             cross: true
           - job_name: rtragent-mipsel
             binary: rtragent
-            target: mipsel-unknown-linux-gnu
+            target: mipsel-unknown-linux-musl
             cross: true
           - job_name: rtragent-x86_64
             binary: rtragent
