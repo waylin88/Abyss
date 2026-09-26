@@ -12,18 +12,16 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 /// connection (kill -9, power loss, cable cut) is detected within
 /// ~60 seconds instead of the OS default of 2–120 minutes.
 fn set_tcp_keepalive(s: &TcpStream) {
-    if let Ok(std) = s.try_clone() {
-        if let Ok(std) = std.into_std() {
-            if let Ok(s2) = socket2::SockRef::from(&std) {
-                // Idle 30 s before first probe
-                let _ = s2.set_tcp_keepalive(
-                    &socket2::TcpKeepalive::new()
-                        .with_time(Duration::from_secs(30))
-                        .with_interval(Duration::from_secs(10))
-                        .with_retries(3),
-                );
-            }
-        }
+    // Convert to std::net::TcpStream for socket2 access
+    if let Ok(std) = s.clone().into_std() {
+        let s2 = socket2::SockRef::from(&std);
+        // Idle 30s → probe every 10s → 3 probes → dead
+        let _ = s2.set_tcp_keepalive(
+            &socket2::TcpKeepalive::new()
+                .with_time(Duration::from_secs(30))
+                .with_interval(Duration::from_secs(10))
+                .with_retries(3),
+        );
     }
 }
 
