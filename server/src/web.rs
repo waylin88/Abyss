@@ -74,8 +74,8 @@ fn generate_session_token() -> String {
 }
 
 async fn check_auth(headers: &HeaderMap, sessions: &Mutex<HashMap<String, Instant>>) -> bool {
-    // Extract session token from cookie
-    let token_from_cookie = |headers: &HeaderMap| -> Option<&str> {
+    // Helper: extract session token from Cookie header
+    fn cookie_token(headers: &HeaderMap) -> Option<&str> {
         if let Some(cookie) = headers.get(header::COOKIE) {
             if let Ok(cookie_str) = cookie.to_str() {
                 for part in cookie_str.split(';') {
@@ -87,20 +87,20 @@ async fn check_auth(headers: &HeaderMap, sessions: &Mutex<HashMap<String, Instan
             }
         }
         None
-    };
+    }
 
     let token = if let Some(auth) = headers.get(header::AUTHORIZATION) {
         if let Ok(auth_str) = auth.to_str() {
             if let Some(val) = auth_str.strip_prefix("Bearer ") {
                 Some(val.trim())
             } else {
-                token_from_cookie(headers)
+                cookie_token(headers)
             }
         } else {
             None
         }
     } else {
-        token_from_cookie(headers)
+        cookie_token(headers)
     };
 
     if let Some(t) = token {
