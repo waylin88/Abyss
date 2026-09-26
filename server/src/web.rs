@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,7 +10,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::agent_manager::AgentManager;
@@ -19,9 +20,56 @@ struct AppState {
     manager: Arc<AgentManager>,
     password: Arc<String>,
     sessions: Arc<Mutex<HashMap<String, Instant>>>,
+    domain: Arc<Mutex<String>>,
+    data_dir: PathBuf,
 }
 
-pub async fn run(manager: Arc<AgentManager>, addr: &str, password: &str) -> anyhow::Result<()> {
+#[derive(Serialize, Deserialize, Clone)]
+struct ServerConfig {
+    domain: String,
+}
+
+impl ServerConfig {
+    fn load(data_dir: &std::path::Path) -> Self {
+        let path = data_dir.join("config.json");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(cfg) = serde_json::from_str::<ServerConfig>(&content) {
+                return cfg;
+            }
+        }
+        ServerConfig {
+            domain: String::new(),
+        }
+    }
+
+    fn save(&self, data_dir: &std::path::Path) {
+        let path = data_dir.join("config.json");
+        if let Ok(content) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(&path, content);
+        }
+    }
+}
+
+pub async fn run(
+    manager: Arc<AgentManager>,
+    addr: &str,
+    password: &str,
+    data_dir: &str,
+    cli_domain: &str,
+) -> anyhow::Result<()> {
+    // Ensure data directory exists
+    let data_path = PathBuf::from(data_dir);
+    let _ = std::fs::create_dir_all(&data_path);
+
+    // Load config (CLI domain takes precedence over saved config)
+    let mut cfg = ServerConfig::load(&data_path);
+    if !cli_domain.is_empty() {
+        cfg.domain = cli_domain.to_string();
+        cfg.save(&data_path);
+    }
+
+    let domain = Arc::new(Mutex::new(cfg.domain.clone()));
+
     let sessions = Arc::new(Mutex::new(HashMap::new()));
 
     // Spawn periodic session cleanup (every 30 minutes)
@@ -38,6 +86,8 @@ pub async fn run(manager: Arc<AgentManager>, addr: &str, password: &str) -> anyh
         manager,
         password: Arc::new(password.to_string()),
         sessions,
+        domain,
+        data_dir: data_path,
     };
 
     let app = Router::new()
@@ -49,6 +99,7 @@ pub async fn run(manager: Arc<AgentManager>, addr: &str, password: &str) -> anyh
         .route("/api/forward", post(do_forward))
         .route("/api/forward/stop", post(stop_forward))
         .route("/api/forwards", get(list_forwards))
+        .route("/api/config", get(get_config).post(set_config))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -319,4 +370,48 @@ async fn api_ping(
     }
     let ok = state.manager.ping_agent(&req.agent).await;
     (StatusCode::OK, Json(serde_json::json!({"ok": ok})))
+}
+
+// ---------- Config ----------
+
+async fn get_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !state.password.is_empty() && !check_auth(&headers, &state.sessions).await {
+        return unauth();
+    }
+    let domain = state.domain.lock().await.clone();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"domain": domain})),
+    )
+}
+
+#[derive(Deserialize)]
+struct SetConfigReq {
+    domain: Option<String>,
+}
+
+async fn set_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<SetConfigReq>,
+) -> impl IntoResponse {
+    if !state.password.is_empty() && !check_auth(&headers, &state.sessions).await {
+        return unauth();
+    }
+    if let Some(domain) = req.domain {
+        let cfg = ServerConfig {
+            domain: domain.clone(),
+        };
+        cfg.save(&state.data_dir);
+        let mut cur = state.domain.lock().await;
+        *cur = domain;
+    }
+    let domain = state.domain.lock().await.clone();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"ok": true, "domain": domain})),
+    )
 }

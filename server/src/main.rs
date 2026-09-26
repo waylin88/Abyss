@@ -27,6 +27,9 @@ struct Cli {
 
     #[arg(long, default_value = "", help = "Domain suffix for HTTP proxy (e.g., dome.com). Requests with Host: <agent_id>.dome.com are routed to that agent.")]
     http_proxy_domain: String,
+
+    #[arg(long, default_value = "./data", help = "Directory for persisting config and data.")]
+    data_dir: String,
 }
 
 #[tokio::main]
@@ -91,6 +94,6 @@ async fn main() -> anyhow::Result<()> {
         println!("[server] web password:  {} (login required)", cli.password);
     }
 
-    web::run(manager, &web_addr, &cli.password).await?;
+    web::run(manager, &web_addr, &cli.password, &cli.data_dir, &cli.http_proxy_domain).await?;
     Ok(())
 }

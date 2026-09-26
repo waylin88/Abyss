@@ -11,15 +11,18 @@
   h2 { font-size: 14px; margin-bottom: 8px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
   .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 320px 1fr; gap: 20px; }
   .panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
-  .agent-item { padding: 10px; border: 1px solid #30363d; border-radius: 6px; margin-bottom: 8px; cursor: pointer; transition: all 0.15s; }
+  .agent-item { padding: 8px 10px; border: 1px solid #30363d; border-radius: 6px; margin-bottom: 4px; cursor: pointer; transition: all 0.15s; display:flex; align-items:center; gap:6px; }
   .agent-item:hover { border-color: #58a6ff; }
   .agent-item.active { border-color: #238636; background: #0d2818; }
-  .agent-name { font-weight: bold; font-size: 14px; color: #e6edf3; }
-  .agent-meta { font-size: 11px; color: #8b949e; margin-top: 4px; }
-  .agent-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #238636; margin-right: 6px; }
+  .agent-name { font-weight: bold; font-size: 13px; color: #e6edf3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .agent-id-label { font-size: 11px; color: #8b949e; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex-shrink:1; min-width:0; }
+  .agent-dot { flex-shrink:0; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #238636; }
   .agent-dot-offline { background: #484f58; }
   .agent-item-offline { opacity: 0.7; cursor: default !important; }
   .agent-item-offline:hover { border-color: #30363d !important; }
+  .detail-row { display:flex; padding:4px 0; font-size:13px; }
+  .detail-label { color:#8b949e; width:80px; flex-shrink:0; }
+  .detail-value { color:#e6edf3; }
   .cmd-area { width: 100%; min-height: 80px; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 8px; font-family: monospace; font-size: 13px; resize: vertical; }
   button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 13px; margin-top: 8px; }
   button:hover { background: #2ea043; }
@@ -76,7 +79,6 @@
     </div>
     <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
       <select id="token-filter" onchange="refreshAgents()" style="flex:1;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:12px">
-        <option value="__all__">所有分组</option>
       </select>
       <label style="font-size:12px;color:#8b949e;display:flex;align-items:center;gap:4px;flex-shrink:0">
         <input type="checkbox" id="show-offline" checked onchange="refreshAgents()"> 显示离线
@@ -85,6 +87,15 @@
     <div id="agents-list"><div class="empty">刷新中...</div></div>
   </div>
   <div>
+    <!-- Agent detail panel (hidden when no agent selected) -->
+    <div id="detail-panel" class="panel section" style="display:none">
+      <h2>设备信息</h2>
+      <div id="detail-content"></div>
+      <div style="margin-top:8px">
+        <button class="secondary" id="detail-ping-btn" onclick="pingCurrentAgent()" style="margin:0;margin-right:6px">检测连通</button>
+        <span id="detail-ping-result" style="font-size:12px;color:#8b949e;margin-left:4px"></span>
+      </div>
+    </div>
     <div class="panel section">
       <h2>Shell 命令执行</h2>
       <div style="font-size:12px;color:#8b949e;margin-bottom:8px">目标：<span id="current-agent" style="color:#58a6ff">（未选择）</span></div>
@@ -108,14 +119,16 @@
     </div>
     <div class="panel section">
       <h2>Web快速访问</h2>
-      <p style="font-size:12px;color:#8b949e;margin-bottom:8px">通过 "token_id.域名:18080" 直接访问客户端Web管理界面</p>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-        <input id="domain-input" type="text" placeholder="主域名 (如 dome.com)" style="flex:1;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 8px;font-size:13px">
-        <button onclick="saveDomain()" style="margin:0">保存</button>
+      <div id="web-access-area" style="font-size:13px">
+        <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="web-toggle" onchange="onWebToggle()" style="width:16px;height:16px;cursor:pointer">
+            <span style="color:#8b949e;font-size:12px">启用</span>
+          </label>
+        </div>
+        <div id="web-url-display" style="margin-top:6px;display:none"></div>
+        <div id="web-no-agent" style="color:#8b949e;font-size:12px;margin-top:8px">请先选择一个路由器</div>
       </div>
-      <p style="font-size:11px;color:#8b949e;margin-top:6px">
-        服务器需配置泛域名解析 *.dome.com → 服务器IP，并启动时设置 --http-proxy-domain dome.com
-      </p>
     </div>
     <div class="panel section" id="forwards-panel">
       <h2>活动映射 <span id="fwd-count" style="color:#8b949e;font-weight:normal;font-size:12px">(0)</span></h2>
@@ -126,33 +139,70 @@
 
 <script>
 let currentAgent = null;
-let currentAgentName = '';
+let currentAgentName = null;
+let currentAgentData = null;
 let authToken = null;
+let currentDomain = '';
+let lastFetchedAgents = [];
 
-// Domain config
-document.addEventListener('DOMContentLoaded', () => {
-  const saved = localStorage.getItem('httpDomain');
-  if (saved) document.getElementById('domain-input').value = saved;
-});
+// ---------- Config ----------
 
-function saveDomain() {
-  const val = document.getElementById('domain-input').value.trim();
-  localStorage.setItem('httpDomain', val);
-  alert('域名已保存：' + (val || '(空，使用IP访问)'));
+async function loadConfig() {
+  try {
+    const res = await fetch('/api/config', {headers: getHeaders()});
+    if (res.status === 401) return;
+    const data = await res.json();
+    currentDomain = data.domain || '';
+    updateWebUrl();
+  } catch(e) {}
 }
+
+// ---------- Web Quick Access ----------
 
 function getWebUrl(agentId) {
-  const domain = document.getElementById('domain-input').value.trim();
-  if (!domain) return null;
-  const prefix = agentId.includes(':') ? agentId.replace(/:/g, '_') : agentId;
-  return `http://${prefix}.${domain}:18080`;
+  if (!currentDomain) return null;
+  const prefix = agentId && agentId.includes(':') ? agentId.replace(/:/g, '_') : agentId;
+  return `http://${prefix}.${currentDomain}:18080`;
 }
 
-function getHeaders() {
-  const h = {'Content-Type': 'application/json'};
-  // auth cookie is auto-sent by browser; only set Bearer when we have it in memory
-  if (authToken) h['Authorization'] = 'Bearer ' + authToken;
-  return h;
+function updateWebUrl() {
+  const toggle = document.getElementById('web-toggle');
+  const urlDisplay = document.getElementById('web-url-display');
+  const noAgent = document.getElementById('web-no-agent');
+
+  if (!currentAgent) {
+    urlDisplay.style.display = 'none';
+    noAgent.style.display = 'block';
+    noAgent.textContent = '请先选择一个路由器';
+    return;
+  }
+
+  if (!currentDomain) {
+    urlDisplay.style.display = 'none';
+    noAgent.style.display = 'block';
+    noAgent.textContent = '未配置域名，请在启动时设置 --http-proxy-domain';
+    return;
+  }
+
+  noAgent.style.display = 'none';
+
+  const url = getWebUrl(currentAgent);
+  if (!url) {
+    urlDisplay.style.display = 'none';
+    return;
+  }
+
+  if (toggle.checked) {
+    urlDisplay.style.display = 'block';
+    urlDisplay.innerHTML = `<a href="${url}" target="_blank" style="color:#58a6ff;text-decoration:underline;font-size:14px">${url}</a>
+      <p style="color:#8b949e;font-size:11px;margin-top:4px">当前客户端Web管理界面</p>`;
+  } else {
+    urlDisplay.style.display = 'none';
+  }
+}
+
+function onWebToggle() {
+  updateWebUrl();
 }
 
 // ---------- Login ----------
@@ -171,6 +221,7 @@ async function doLogin() {
       authToken = data.token;
       document.getElementById('login-overlay').classList.remove('show');
       document.getElementById('login-error').style.display = 'none';
+      loadConfig();
       refreshAgents();
       refreshForwards();
     } else {
@@ -197,6 +248,7 @@ async function checkNeedLogin() {
     if (res.status === 401) {
       document.getElementById('login-overlay').classList.add('show');
     } else {
+      loadConfig();
       refreshAgents();
       refreshForwards();
     }
@@ -208,6 +260,12 @@ async function checkNeedLogin() {
 function handleUnauth() {
   authToken = null;
   document.getElementById('login-overlay').classList.add('show');
+}
+
+function getHeaders() {
+  const h = {'Content-Type': 'application/json'};
+  if (authToken) h['Authorization'] = 'Bearer ' + authToken;
+  return h;
 }
 
 // ---------- Search ----------
@@ -227,6 +285,7 @@ async function refreshAgents() {
     const res = await fetch(url, {headers: getHeaders()});
     if (res.status === 401) { handleUnauth(); return; }
     const agents = await res.json();
+    lastFetchedAgents = agents;
 
     const showOffline = document.getElementById('show-offline').checked;
 
@@ -234,15 +293,19 @@ async function refreshAgents() {
     const tokens = [...new Set(agents.map(a => a.token))];
     const sel = document.getElementById('token-filter');
     const currentVal = sel.value;
-    sel.innerHTML = '<option value="__all__">所有分组</option>' +
-      tokens.map(t => `<option value="${t}">${t || '(无token)'}</option>`).join('');
-    sel.value = currentVal;
+    sel.innerHTML = tokens.map(t => `<option value="${t}">${t || '(无token)'}</option>`).join('');
+    // If current selection no longer valid, default to first token
+    if (!tokens.includes(currentVal)) {
+      sel.value = tokens.length > 0 ? tokens[0] : '';
+    } else {
+      sel.value = currentVal;
+    }
 
     // ---- Filter by selected token ----
     const filterToken = sel.value;
-    let filtered = filterToken === '__all__'
-      ? agents
-      : agents.filter(a => a.token === filterToken);
+    let filtered = filterToken
+      ? agents.filter(a => a.token === filterToken)
+      : agents;
 
     // ---- Optionally hide offline agents ----
     if (!showOffline) {
@@ -261,43 +324,15 @@ async function refreshAgents() {
       return;
     }
 
-    // Format last_seen for offline agents
-    function fmtLastSeen(epoch) {
-      if (!epoch) return '';
-      const diff = Math.floor(Date.now() / 1000) - epoch;
-      if (diff < 60) return '刚刚离线';
-      if (diff < 3600) return Math.floor(diff / 60) + '分钟前离线';
-      if (diff < 86400) return Math.floor(diff / 3600) + '小时前离线';
-      return Math.floor(diff / 86400) + '天前离线';
-    }
-
     list.innerHTML = filtered.map(a => {
       const dotClass = a.online ? 'agent-dot' : 'agent-dot agent-dot-offline';
-      const itemClass = 'agent-item' + (currentAgent === a.id ? ' active' : '') + (a.online ? '' : ' agent-item-offline');
-      const metaParts = [a.addr, '分组: ' + (a.token || '(无)')];
-      if (a.online) {
-        metaParts.push('在线 ' + Math.floor(a.uptime_secs / 60) + '分' + (a.uptime_secs % 60) + '秒');
-        // Web quick access link
-        const webUrl = getWebUrl(a.id);
-        if (webUrl) {
-          metaParts.push(`<a href="${webUrl}" target="_blank" style="color:#58a6ff;text-decoration:underline">Web访问</a>`);
-        }
-      } else {
-        metaParts.push(fmtLastSeen(a.last_seen));
-      }
+      const isActive = currentAgentData && currentAgentData.id === a.id;
+      const itemClass = 'agent-item' + (isActive ? ' active' : '') + (a.online ? '' : ' agent-item-offline');
 
-      return `
-      <div class="${itemClass}" onclick="${a.online ? `selectAgent('${a.id}', '${a.name}')` : ''}">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div>
-            <span class="${dotClass}"></span><span class="agent-name">${a.name}</span>
-            <span style="font-size:11px;color:#8b949e;margin-left:6px">${a.id}</span>
-          </div>
-          <div style="display:flex;gap:6px;align-items:center">
-            ${a.online ? `<button class="ping-btn" onclick="event.stopPropagation(); pingAgent('${a.id}', this)">检测</button>` : '<span style="font-size:11px;color:#8b949e">离线</span>'}
-          </div>
-        </div>
-        <div class="agent-meta">${metaParts.join(' · ')}</div>
+      return `<div class="${itemClass}" onclick="${a.online ? `selectAgent('${a.id}')` : ''}">
+        <span class="${dotClass}"></span>
+        <span class="agent-name">${a.name}</span>
+        <span class="agent-id-label">${a.id}</span>
       </div>`;
     }).join('');
   } catch(e) { console.error(e); }
@@ -333,12 +368,112 @@ async function pingAgent(agentId, btn) {
   }, 3000);
 }
 
-function selectAgent(id, name) {
+function selectAgent(id) {
+  const agent = lastFetchedAgents.find(a => a.id === id);
+  if (!agent) return;
   currentAgent = id;
-  currentAgentName = name;
-  document.getElementById('current-agent').textContent = name + ' (' + id + ')';
+  currentAgentName = agent.name;
+  currentAgentData = agent;
+  document.getElementById('current-agent').textContent = agent.name + ' (' + id + ')';
+  // Reset web toggle when switching agents
+  document.getElementById('web-toggle').checked = false;
+  renderDetail(agent);
+  updateWebUrl();
   refreshAgents();
   refreshForwards();
+}
+
+function fmtTime(epoch) {
+  if (!epoch) return '-';
+  const d = new Date(epoch * 1000);
+  const Y = d.getFullYear();
+  const M = String(d.getMonth()+1).padStart(2,'0');
+  const D = String(d.getDate()).padStart(2,'0');
+  const h = String(d.getHours()).padStart(2,'0');
+  const m = String(d.getMinutes()).padStart(2,'0');
+  const s = String(d.getSeconds()).padStart(2,'0');
+  return `${Y}-${M}-${D} ${h}:${m}:${s}`;
+}
+
+function fmtUptime(secs) {
+  if (secs === 0) return '-';
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const mi = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  let r = '';
+  if (d > 0) r += d + '天';
+  if (h > 0) r += h + '小时';
+  if (mi > 0) r += mi + '分';
+  r += s + '秒';
+  return r;
+}
+
+function fmtLastSeen(epoch) {
+  if (!epoch) return '-';
+  const diff = Math.floor(Date.now() / 1000) - epoch;
+  if (diff < 60) return '刚刚离线';
+  if (diff < 3600) return Math.floor(diff / 60) + '分钟前离线';
+  if (diff < 86400) return Math.floor(diff / 3600) + '小时前离线';
+  return Math.floor(diff / 86400) + '天前离线 (' + fmtTime(epoch) + ')';
+}
+
+function renderDetail(agent) {
+  const panel = document.getElementById('detail-panel');
+  panel.style.display = 'block';
+
+  const rows = [
+    { label: '分组', value: agent.token || '(无)' },
+    { label: '名称', value: agent.name },
+    { label: 'ID', value: agent.id },
+    { label: 'IP 地址', value: agent.addr },
+    { label: '上线时间', value: agent.online ? fmtTime(agent.connected_at) : '-' },
+    { label: '在线时长', value: agent.online ? fmtUptime(agent.uptime_secs) : '-' },
+    { label: '状态', value: agent.online ? '🟢 在线' : '🔴 离线' },
+    { label: '离线时间', value: agent.online ? '-' : fmtLastSeen(agent.last_seen) },
+  ];
+
+  document.getElementById('detail-content').innerHTML = rows.map(r =>
+    `<div class="detail-row"><span class="detail-label">${r.label}</span><span class="detail-value">${r.value}</span></div>`
+  ).join('');
+
+  // Ping button state
+  const pingBtn = document.getElementById('detail-ping-btn');
+  const pingResult = document.getElementById('detail-ping-result');
+  pingBtn.disabled = !agent.online;
+  pingResult.textContent = '';
+}
+
+async function pingCurrentAgent() {
+  if (!currentAgentData || !currentAgentData.online) return;
+  const btn = document.getElementById('detail-ping-btn');
+  const result = document.getElementById('detail-ping-result');
+  btn.disabled = true;
+  result.textContent = '检测中…';
+  result.style.color = '#8b949e';
+  try {
+    const res = await fetch('/api/ping', {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({agent: currentAgent})
+    });
+    if (res.status === 401) { handleUnauth(); return; }
+    const data = await res.json();
+    if (data.ok) {
+      result.textContent = '✓ 在线';
+      result.style.color = '#3fb950';
+    } else {
+      result.textContent = '✗ 无响应';
+      result.style.color = '#f85149';
+    }
+  } catch(e) {
+    result.textContent = '✗ 检测失败';
+    result.style.color = '#f85149';
+  }
+  setTimeout(() => {
+    btn.disabled = false;
+    result.textContent = '';
+  }, 3000);
 }
 
 // ---------- Exec ----------
@@ -440,7 +575,18 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) execCmd();
 });
 
-setInterval(refreshAgents, 3000);
+setInterval(() => {
+  refreshAgents();
+  // Update detail panel if a device is selected
+  if (currentAgent && lastFetchedAgents.length > 0) {
+    const updated = lastFetchedAgents.find(a => a.id === currentAgent);
+    if (updated) {
+      currentAgentData = updated;
+      currentAgentName = updated.name;
+      renderDetail(updated);
+    }
+  }
+}, 3000);
 setInterval(refreshForwards, 5000);
 </script>
 </body>

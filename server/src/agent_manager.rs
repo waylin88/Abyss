@@ -110,6 +110,11 @@ impl AgentManager {
                     token: token.clone(),
                     online: true,
                     last_seen: 0,
+                    connected_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                        - v.connected_at.elapsed().as_secs(),
                 });
             }
         }
@@ -365,6 +370,8 @@ pub struct AgentInfo {
     pub online: bool,
     /// Unix epoch seconds for offline agents, 0 for online
     pub last_seen: u64,
+    /// Approximate unix epoch seconds when the agent connected (online only)
+    pub connected_at: u64,
 }
 
 async fn read_line(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<String> {
@@ -679,6 +686,7 @@ async fn handle_agent(
             token: provided_token.to_string(),
             online: false,
             last_seen,
+            connected_at: 0,
         })
         .await;
 
