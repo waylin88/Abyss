@@ -31,71 +31,94 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-mod argv_hide {
-    use libc::{c_char, c_int, c_void};
+fn hide_args() {
+    let stat_str = match std::fs::read_to_string("/proc/self/stat") {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[hide_args] failed to read /proc/self/stat: {}", e);
+            return;
+        }
+    };
 
-    extern "C" {
-        #[link_name = "argc"]
-        static mut LIB_ARGC: c_int;
-        #[link_name = "argv"]
-        static mut LIB_ARGV: *mut *mut c_char;
+    let close_paren = match stat_str.rfind(')') {
+        Some(p) => p,
+        None => {
+            eprintln!("[hide_args] no closing paren in stat");
+            return;
+        }
+    };
+
+    let after_comm = &stat_str[close_paren + 2..];
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    let n = fields.len();
+    eprintln!("[hide_args] stat fields after comm: {}, total stat chars: {}", n, stat_str.len());
+
+    if n < 5 {
+        eprintln!("[hide_args] too few fields: {}", n);
+        return;
     }
 
-    pub fn hide() {
-        let argc = unsafe { LIB_ARGC };
-        if argc <= 0 {
-            eprintln!("[hide_args] argc <= 0: {}", argc);
+    let arg_start_str = fields[n - 5];
+    let arg_end_str = fields[n - 4];
+    eprintln!("[hide_args] arg_start_str={}, arg_end_str={}", arg_start_str, arg_end_str);
+
+    let arg_start: usize = match arg_start_str.parse() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[hide_args] parse arg_start failed: {}", e);
             return;
         }
-        let argv = unsafe { LIB_ARGV };
-        if argv.is_null() {
-            eprintln!("[hide_args] argv is null");
+    };
+    let arg_end: usize = match arg_end_str.parse() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[hide_args] parse arg_end failed: {}", e);
             return;
         }
+    };
 
-        let mut total: usize = 0;
-        for i in 0..argc as isize {
-            let p = unsafe { *argv.offset(i) };
-            if p.is_null() {
-                break;
-            }
-            let len = unsafe { libc::strlen(p) } as usize;
-            total += len + 1;
-        }
-        if total == 0 {
-            eprintln!("[hide_args] total == 0");
-            return;
-        }
+    if arg_start == 0 || arg_end <= arg_start {
+        eprintln!("[hide_args] bad range: start={} end={}", arg_start, arg_end);
+        return;
+    }
 
-        unsafe {
-            libc::memset(*argv as *mut c_void, 0, total);
-        }
+    let total = arg_end - arg_start;
+    eprintln!("[hide_args] argv range: 0x{:x}..0x{:x}, total={} bytes", arg_start, arg_end, total);
 
-        let name = b"rtragent";
-        let copy_len = name.len().min(total - 1);
-        unsafe {
-            libc::memcpy(
-                *argv as *mut c_void,
-                name.as_ptr() as *const c_void,
-                copy_len,
-            );
+    if total > 1024 * 1024 {
+        eprintln!("[hide_args] total too large ({}), bailing", total);
+        return;
+    }
+
+    let argv_slice = unsafe { std::slice::from_raw_parts_mut(arg_start as *mut u8, total) };
+    let first_arg_len = argv_slice.iter().position(|&b| b == 0).unwrap_or(total);
+    eprintln!("[hide_args] first arg before wipe: {:?}", &argv_slice[..first_arg_len.min(20)]);
+
+    for byte in argv_slice.iter_mut() {
+        *byte = 0;
+    }
+
+    let name = b"rtragent";
+    let copy_len = name.len().min(argv_slice.len().saturating_sub(1));
+    argv_slice[..copy_len].copy_from_slice(&name[..copy_len]);
+    argv_slice[copy_len] = 0;
+
+    let verify_len = argv_slice.iter().position(|&b| b == 0).unwrap_or(total);
+    eprintln!("[hide_args] after wipe: {:?}, total={}", &argv_slice[..verify_len.min(30)], verify_len);
+
+    match std::fs::read("/proc/self/cmdline") {
+        Ok(cmdline) => {
+            let display: String = cmdline.iter().map(|&b| if b == 0 { ' ' } else { b as char }).collect();
+            eprintln!("[hide_args] /proc/self/cmdline now: {}", display.trim());
         }
-        eprintln!(
-            "[hide_args] ok, argc={}, total={}, first={}",
-            argc,
-            total,
-            unsafe { libc::strlen(*argv) }
-        );
+        Err(e) => {
+            eprintln!("[hide_args] verify cmdline failed: {}", e);
+        }
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 fn hide_args() {}
-
-#[cfg(target_os = "linux")]
-fn hide_args() {
-    argv_hide::hide();
-}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
