@@ -66,6 +66,14 @@ pub struct ForwardInfo {
     pub server_port: u16,
 }
 
+#[derive(serde::Serialize, Clone)]
+pub struct ForwardConflict {
+    pub forward_id: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub local_addr: String,
+}
+
 impl AgentManager {
     pub fn new() -> Self {
         Self {
@@ -200,7 +208,38 @@ impl AgentManager {
         agent_name: &str,
         local_addr: &str,
         server_port: u16,
+        force: bool,
     ) -> anyhow::Result<()> {
+        // Check if port is already occupied by another forward
+        let conflict = {
+            let forwards = self.forwards.lock().await;
+            forwards
+                .iter()
+                .find(|(_, h)| h.server_port == server_port)
+                .map(|(id, h)| ForwardConflict {
+                    forward_id: id.clone(),
+                    agent_id: h.agent_id.clone(),
+                    agent_name: h.agent_name.clone(),
+                    local_addr: h.local_addr.clone(),
+                })
+        };
+
+        if let Some(c) = conflict {
+            if !force {
+                return Err(anyhow::anyhow!(
+                    "PORT_CONFLICT:{}:{}:{}:{}",
+                    c.forward_id,
+                    c.agent_id,
+                    c.agent_name,
+                    c.local_addr
+                ));
+            }
+            // Stop the conflicting forward first
+            self.stop_forward(&c.forward_id).await?;
+            // Give the OS a moment to release the port
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
         start_port_forward(
             Arc::clone(self),
             agent_id.to_string(),

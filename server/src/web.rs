@@ -165,6 +165,8 @@ struct ForwardReq {
     server_port: u16,
     #[serde(default = "default_host")]
     local_host: String,
+    #[serde(default)]
+    force: bool,
 }
 
 fn default_host() -> String {
@@ -183,7 +185,7 @@ async fn do_forward(
     let local_addr = format!("{}:{}", req.local_host, req.local_port);
     match state
         .manager
-        .forward(&req.agent, &name, &local_addr, req.server_port)
+        .forward(&req.agent, &name, &local_addr, req.server_port, req.force)
         .await
     {
         Ok(()) => (
@@ -193,10 +195,29 @@ async fn do_forward(
                 "msg": format!("映射已启动: 0.0.0.0:{} -> {}:{}", req.server_port, req.agent, local_addr)
             })),
         ),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"ok": false, "err": e.to_string()})),
-        ),
+        Err(e) => {
+            let err = e.to_string();
+            if let Some(details) = err.strip_prefix("PORT_CONFLICT:") {
+                let parts: Vec<&str> = details.split(':').collect();
+                if parts.len() == 4 {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(serde_json::json!({
+                            "ok": false,
+                            "conflict": true,
+                            "forward_id": parts[0],
+                            "agent_id": parts[1],
+                            "agent_name": parts[2],
+                            "local_addr": parts[3],
+                        })),
+                    );
+                }
+            }
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"ok": false, "err": err})),
+            )
+        }
     }
 }
 

@@ -327,6 +327,11 @@ async function execCmd() {
 
 async function doForward() {
   if (!currentAgent) { alert('请先选择一个路由器'); return; }
+  await doForwardWithForce(false);
+}
+
+async function doForwardWithForce(force) {
+  if (!currentAgent) { alert('请先选择一个路由器'); return; }
   const lp = parseInt(document.getElementById('fwd-local').value);
   const sp = parseInt(document.getElementById('fwd-server').value);
   if (!lp || !sp) { alert('请输入有效端口'); return; }
@@ -334,14 +339,19 @@ async function doForward() {
     const res = await fetch('/api/forward', {
       method: 'POST',
       headers: getHeaders(),
-      body: JSON.stringify({agent: currentAgent, agent_name: currentAgentName, local_port: lp, server_port: sp})
+      body: JSON.stringify({agent: currentAgent, agent_name: currentAgentName, local_port: lp, server_port: sp, force})
     });
     const data = await res.json();
     if (data.ok) {
       alert('映射已创建\n服务器端口: ' + sp + '\n路由目标: localhost:' + lp);
       refreshForwards();
+    } else if (data.conflict) {
+      // Port conflict — ask user if they want to replace
+      if (confirm(`服务器端口 ${sp} 已被占用\n\n当前映射: ${data.agent_name} (${data.agent_id}) → ${data.local_addr}\n\n是否替换为当前选择的路由器？`)) {
+        await doForwardWithForce(true);
+      }
     } else {
-      alert('失败: ' + data.err);
+      alert('失败: ' + (data.err || '未知错误'));
     }
   } catch(e) { alert('错误: ' + e.message); }
 }
