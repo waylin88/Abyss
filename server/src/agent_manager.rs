@@ -10,6 +10,15 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::ip_lookup::IpLookup;
 
+/// Ban an IP after this many failed handshakes within `BAN_WINDOW`.
+const BAN_FAILURE_THRESHOLD: usize = 3;
+/// Time window (seconds) for counting handshake failures.
+const BAN_WINDOW_SECS: u64 = 60;
+/// How long an IP stays banned (seconds).
+const BAN_DURATION_SECS: u64 = 300;
+/// Max time (seconds) to wait for the HELLO handshake before dropping.
+const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+
 /// Set TCP keepalive so a dead connection (kill -9, power loss) is
 /// detected within ~12 minutes rather than the OS default of 2 hours.
 /// The 30-minute application heartbeat catches any remaining cases.
@@ -35,6 +44,10 @@ pub struct AgentManager {
     ip_lookup: IpLookup,
     /// Currently selected web proxy agent (only this agent's web UI is accessible via proxy)
     web_agent: Mutex<Option<String>>,
+    /// IPs currently banned (IP → ban expiry instant)
+    banned_ips: Mutex<HashMap<String, Instant>>,
+    /// Handshake failure history per IP (for automatic banning)
+    ban_failures: Mutex<HashMap<String, Vec<Instant>>>,
 }
 
 pub struct AgentHandle {
@@ -93,6 +106,8 @@ impl AgentManager {
             pending_pings: Mutex::new(HashMap::new()),
             ip_lookup,
             web_agent: Mutex::new(None),
+            banned_ips: Mutex::new(HashMap::new()),
+            ban_failures: Mutex::new(HashMap::new()),
         }
     }
 
@@ -116,6 +131,52 @@ impl AgentManager {
             Some(allowed) => agent_id == allowed.as_str(),
             None => false, // no agent selected → deny all proxy access
         }
+    }
+
+    // ── IP banning ────────────────────────────────────────────────
+
+    /// Check if an IP is currently banned.
+    pub async fn is_ip_banned(&self, ip: &str) -> bool {
+        let bans = self.banned_ips.lock().await;
+        if let Some(expires) = bans.get(ip) {
+            if *expires > Instant::now() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Record a failed handshake from `ip`. Returns `true` if the IP
+    /// should now be banned (threshold reached).
+    pub async fn record_handshake_failure(&self, ip: &str) -> bool {
+        let now = Instant::now();
+        // Clean expired failures and add current
+        let mut failures = self.ban_failures.lock().await;
+        let entry = failures.entry(ip.to_string()).or_insert_with(Vec::new);
+        entry.retain(|t| now.duration_since(*t).as_secs() < BAN_WINDOW_SECS);
+        entry.push(now);
+        entry.len() >= BAN_FAILURE_THRESHOLD
+    }
+
+    /// Ban an IP for the configured duration.
+    pub async fn ban_ip(&self, ip: &str) {
+        let mut bans = self.banned_ips.lock().await;
+        let expiry = Instant::now() + Duration::from_secs(BAN_DURATION_SECS);
+        bans.insert(ip.to_string(), expiry);
+        println!(
+            "[server] 🚫 banned {} for {}s (handshake flood)",
+            ip, BAN_DURATION_SECS
+        );
+        // Clean up failure history for this IP
+        let mut failures = self.ban_failures.lock().await;
+        failures.remove(ip);
+    }
+
+    /// Periodically clean up expired bans (call from background task).
+    pub async fn cleanup_bans(&self) {
+        let mut bans = self.banned_ips.lock().await;
+        let now = Instant::now();
+        bans.retain(|_, expires| *expires > now);
     }
 
     /// Get the effective agent_id by prefixing with token for isolation.
@@ -418,6 +479,10 @@ async fn read_line(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<
                 .trim_end_matches('\n')
                 .to_string());
         }
+        // Safety limit: don't buffer more than 64KB (prevents OOM from garbage)
+        if buf.len() > 65536 {
+            anyhow::bail!("line too long (>64KB)");
+        }
         match stream.read(&mut tmp).await {
             Ok(0) => anyhow::bail!("connection closed"),
             Ok(n) => buf.extend_from_slice(&tmp[..n]),
@@ -434,6 +499,15 @@ pub async fn run_agent_listener(
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     println!("[server] agent listener ready on {}", addr);
+
+    // Background task: clean up expired bans every 60 seconds
+    let ban_cleaner = manager.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            ban_cleaner.cleanup_bans().await;
+        }
+    });
 
     loop {
         let (socket, peer) = listener.accept().await?;
@@ -455,15 +529,39 @@ async fn handle_agent(
     allow_tokens: &[String],
     block_tokens: &[String],
 ) -> anyhow::Result<()> {
+    let peer_ip = peer.ip().to_string();
+
+    // ── IP ban check ──────────────────────────────────────────────
+    if manager.is_ip_banned(&peer_ip).await {
+        // Silently drop — don't even respond
+        return Ok(());
+    }
+
     // Enable aggressive TCP keepalive for fast dead-connection detection
     set_tcp_keepalive(&socket);
 
+    // ── Handshake with timeout ────────────────────────────────────
     let mut hello_buf: Vec<u8> = Vec::with_capacity(256);
-    let line = read_line(&mut socket, &mut hello_buf).await?;
+    let line = tokio::time::timeout(
+        Duration::from_secs(HANDSHAKE_TIMEOUT_SECS),
+        read_line(&mut socket, &mut hello_buf),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("handshake timeout"))??;
 
     let parts: Vec<&str> = line.trim().splitn(4, ' ').collect();
     if parts.len() < 2 || parts[0] != "HELLO" {
-        anyhow::bail!("invalid handshake: {}", line.trim());
+        // Record failure and auto-ban if threshold reached
+        if manager.record_handshake_failure(&peer_ip).await {
+            manager.ban_ip(&peer_ip).await;
+        } else {
+            let fail_count = manager.ban_failures.lock().await.get(&peer_ip).map_or(0, |v| v.len());
+            println!(
+                "[server] invalid handshake from {} (failure #{})",
+                peer_ip, fail_count
+            );
+        }
+        return Ok(());
     }
     let name = parts[1].to_string();
 
