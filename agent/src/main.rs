@@ -59,11 +59,11 @@ fn hide_args() {
     let rest = &stat[close_paren + 2..];
     let fields: Vec<&str> = rest.split_whitespace().collect();
 
-    let arg_start = match fields.get(45)?.parse::<usize>().ok() {
+    let arg_start = match fields.get(45).and_then(|s| s.parse::<usize>().ok()) {
         Some(v) if v != 0 => v,
         _ => return,
     };
-    let arg_end = match fields.get(46)?.parse::<usize>().ok() {
+    let arg_end = match fields.get(46).and_then(|s| s.parse::<usize>().ok()) {
         Some(v) if v > arg_start => v,
         _ => return,
     };
