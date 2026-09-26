@@ -17,110 +17,76 @@ jobs:
           - job_name: rtrserver-x86_64
             binary: rtrserver
             target: x86_64-unknown-linux-gnu
-            cross: false
+            builder: cargo
           - job_name: rtrserver-aarch64
             binary: rtrserver
             target: aarch64-unknown-linux-gnu
-            cross: true
+            builder: cross
           - job_name: rtragent-mips
             binary: rtragent
             target: mips-unknown-linux-musl
-            cross: true
+            builder: musl-cross
+            docker_image: messense/rust-musl-cross:mips-musl
           - job_name: rtragent-mipsel
             binary: rtragent
             target: mipsel-unknown-linux-musl
-            cross: true
-          - job_name: rtragent-mipsel-uclibc
-            binary: rtragent
-            target: mipsel-linux-uclibc
-            cross: false
+            builder: musl-cross
+            docker_image: messense/rust-musl-cross:mipsel-musl
           - job_name: rtragent-armv7
             binary: rtragent
             target: armv7-unknown-linux-musleabihf
-            cross: true
+            builder: musl-cross
+            docker_image: messense/rust-musl-cross:armv7-musleabihf
           - job_name: rtragent-x86_64
             binary: rtragent
             target: x86_64-unknown-linux-gnu
-            cross: false
+            builder: cargo
           - job_name: rtragent-aarch64
             binary: rtragent
             target: aarch64-unknown-linux-gnu
-            cross: true
+            builder: cross
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust (native)
-        if: matrix.cross == false && matrix.target != 'mipsel-linux-uclibc'
+      - name: Install Rust (cargo/native)
+        if: matrix.builder == 'cargo'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Install Rust (cross host)
-        if: matrix.cross == true
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
+        if: matrix.builder == 'cross'
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cross
-        if: matrix.cross == true
+        if: matrix.builder == 'cross'
         run: cargo install cross --locked
 
-      - name: Install mipsel-linux-uclibc toolchain
-        if: matrix.target == 'mipsel-linux-uclibc'
-        run: |
-          wget -q https://github.com/hanwckf/padavan-toolchain/releases/download/v1.0/mipsel-linux-uclibc.tar.xz
-          tar xf mipsel-linux-uclibc.tar.xz
-          echo "=== bin/ ===" && ls bin/
-          echo "=== find gcc ===" && find . -name "*-gcc*" -o -name "*gcc*" 2>/dev/null | head -20
-          TOOLCHAIN_BIN=$(find . -name "mipsel-linux-uclibc-gcc" -exec dirname {} \; | head -1)
-          if [ -z "$TOOLCHAIN_BIN" ]; then
-            TOOLCHAIN_BIN=$(find . -name "*-gcc" -exec dirname {} \; | head -1)
-          fi
-          echo "TOOLCHAIN_BIN=$TOOLCHAIN_BIN"
-          echo "${TOOLCHAIN_BIN}" >> $GITHUB_PATH
-          ls "${TOOLCHAIN_BIN}"/
-
-      - name: Build uClibc target
-        if: matrix.target == 'mipsel-linux-uclibc'
-        run: |
-          rustup toolchain install nightly --profile minimal
-          rustup component add rust-src --toolchain nightly
-          cat > .cargo/config.toml <<'EOF'
-          [target.mipsel-unknown-linux-gnu]
-          linker = "mipsel-linux-uclibc-gcc"
-          EOF
-          RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static" \
-          cargo +nightly build --release -p rtragent \
-            --target mipsel-unknown-linux-gnu \
-            -Zbuild-std=std,core,alloc
-
-      - name: Build (native)
-        if: matrix.cross == false && matrix.target != 'mipsel-linux-uclibc'
+      - name: Build (cargo native)
+        if: matrix.builder == 'cargo'
         run: cargo build --release -p ${{ matrix.binary }} --target ${{ matrix.target }}
 
       - name: Build (cross)
-        if: matrix.cross == true
-        env:
-          RUSTFLAGS: "-C target-feature=+crt-static"
-        run: cross build --release -p ${{ matrix.binary }} --target ${{ matrix.target }} -Zbuild-std=std,core,alloc
+        if: matrix.builder == 'cross'
+        run: cross build --release -p ${{ matrix.binary }} --target ${{ matrix.target }}
 
-      - name: Strip & Rename
+      - name: Build (musl-cross docker)
+        if: matrix.builder == 'musl-cross'
+        run: |
+          docker run --rm -v $PWD:/home/rust/src ${{ matrix.docker_image}} \
+            bash -c "cargo build --release -p ${{ matrix.binary}} --target ${{ matrix.target}} && \
+                     musl-strip target/${{ matrix.target}}/release/${{ matrix.binary}} || \
+                     strip target/${{ matrix.target}}/release/${{ matrix.binary}} || true"
+
+      - name: Rename & Verify
         run: |
           BIN="${{ matrix.binary }}"
           TGT="${{ matrix.target }}"
-          if [ "$TGT" = "mipsel-linux-uclibc" ]; then
-            SRC="target/mipsel-unknown-linux-gnu/release/${BIN}"
-          else
-            SRC="target/${TGT}/release/${BIN}"
-          fi
+          SRC="target/${TGT}/release/${BIN}"
           OUT="${BIN}-${TGT}"
-          if command -v llvm-strip &>/dev/null; then
-            llvm-strip "$SRC" -o "$OUT" 2>/dev/null || cp "$SRC" "$OUT"
-          else
-            cp "$SRC" "$OUT"
-          fi
+          cp "$SRC" "$OUT"
           ls -lh "$OUT"
           echo "--- ELF interpreter check ---"
           readelf -l "$OUT" 2>/dev/null | grep "interpreter" || echo "(static, no interpreter)"
