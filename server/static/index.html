@@ -60,7 +60,7 @@
   .ping-ok { background: #238636 !important; border-color: #2ea043 !important; color: #fff !important; }
   .ping-fail { background: #da3633 !important; border-color: #f85149 !important; color: #fff !important; }
   /* Login overlay */
-  #login-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 999; align-items: center; justify-content: center; }
+  #login-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: #000000; z-index: 999; align-items: center; justify-content: center; }
   #login-overlay.show { display: flex; }
   .login-box { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 32px; width: 360px; text-align: center; }
   .login-box h2 { color: #e6edf3; font-size: 20px; margin-bottom: 20px; text-transform: none; letter-spacing: 0; }
@@ -109,6 +109,19 @@
       <div id="detail-content" class="dhoriz"></div>
     </div>
     <div class="panel section">
+      <h2>Web快速访问</h2>
+      <div id="web-access-area" style="font-size:13px">
+        <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="web-toggle" onchange="onWebToggle()" style="width:16px;height:16px;cursor:pointer">
+            <span style="color:#8b949e;font-size:12px">启用</span>
+          </label>
+        </div>
+        <div id="web-url-display" style="margin-top:6px;display:none"></div>
+        <div id="web-no-agent" style="color:#8b949e;font-size:12px;margin-top:8px">请先选择一个路由器</div>
+      </div>
+    </div>
+    <div class="panel section">
       <h2>Shell 命令执行</h2>
       <div style="font-size:12px;color:#8b949e;margin-bottom:8px">目标：<span id="current-agent" style="color:#58a6ff">（未选择）</span></div>
       <textarea class="cmd-area" id="cmd-input" placeholder="例如：cat /etc/openwrt_release"></textarea>
@@ -128,19 +141,6 @@
       <p style="font-size:11px;color:#8b949e;margin-top:6px">
         映射后，外部访问 http://服务器IP:端口 即可到达路由器对应端口
       </p>
-    </div>
-    <div class="panel section">
-      <h2>Web快速访问</h2>
-      <div id="web-access-area" style="font-size:13px">
-        <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-            <input type="checkbox" id="web-toggle" onchange="onWebToggle()" style="width:16px;height:16px;cursor:pointer">
-            <span style="color:#8b949e;font-size:12px">启用</span>
-          </label>
-        </div>
-        <div id="web-url-display" style="margin-top:6px;display:none"></div>
-        <div id="web-no-agent" style="color:#8b949e;font-size:12px;margin-top:8px">请先选择一个路由器</div>
-      </div>
     </div>
     <div class="panel section" id="forwards-panel">
       <h2>活动映射 <span id="fwd-count" style="color:#8b949e;font-weight:normal;font-size:12px">(0)</span></h2>
