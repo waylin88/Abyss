@@ -32,18 +32,17 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
 
 /// Hide command-line arguments from `ps`/`top` etc. on Linux.
 ///
-/// Uses two methods:
-/// 1. `prctl(PR_SET_MM, PR_SET_MM_ARG_END, …)` — shrink the kernel's cmdline
-///    window so only `"rtragent\0"` is visible.
-/// 2. Writes zeros directly to `/proc/self/mem` at the argv address read from
-///    `/proc/self/stat` — this is the belt-and-suspenders fallback.
+/// Reads the argv memory address from `/proc/self/stat`, then directly
+/// zeroes out the argument strings in-place via a raw pointer — exactly
+/// the same technique used by the classic C approach:
 ///
-/// Either method alone is sufficient; both together cover more kernel versions.
+///   for (i = 1; i < argc; i++) memset(argv[i], 0, strlen(argv[i]));
+///
+/// No `prctl`, no `/proc/self/mem`, no capability required — the argv
+/// area lives on the process's own stack and is always writable.
 #[cfg(target_os = "linux")]
 fn hide_args() {
-    use std::io::{Seek, SeekFrom, Write};
-
-    // ── 1. Find the in-memory argv range from /proc/self/stat ──
+    // ── 1. Find the in-memory argv range ──
     let (arg_start, arg_end) = match get_argv_range() {
         Some(v) => v,
         None => return,
@@ -52,36 +51,22 @@ fn hide_args() {
         return;
     }
 
-    // ── 2. Try prctl to shrink arg_end ──
-    // This tells the kernel to only read "rtragent\0" from the argv area.
-    // Requires CAP_SYS_RESOURCE (root). Silently ignore failure.
-    let prog_name = b"rtragent\0";
-    let new_arg_end = arg_start + prog_name.len(); // one past the NUL
+    // ── 2. Zero out the entire argv memory area ──
+    // The argv data (null-separated C strings) sits on the initial process
+    // stack which is always readable + writable by the process itself.
+    let len = (arg_end - arg_start).min(65536); // safety cap
+    let argv_bytes = unsafe { std::slice::from_raw_parts_mut(arg_start as *mut u8, len) };
 
-    unsafe {
-        libc::prctl(
-            libc::PR_SET_MM,
-            libc::PR_SET_MM_ARG_END,
-            new_arg_end as libc::c_ulong,
-            0,
-            0,
-        );
+    // Fill with NULs
+    for byte in argv_bytes.iter_mut() {
+        *byte = 0;
     }
 
-    // ── 3. Directly overwrite argv memory via /proc/self/mem ──
-    // This works on Linux ≥ 3.2 even without prctl / capabilities.
-    if let Ok(mut mem) = std::fs::OpenOptions::new().write(true).open("/proc/self/mem") {
-        // Overwrite the whole arg area with zeros first
-        let zero_len = (arg_end - arg_start).min(65536); // safety cap
-        let zeroes = vec![0u8; zero_len];
-        if mem.seek(SeekFrom::Start(arg_start as u64)).is_ok() {
-            let _ = mem.write(&zeroes);
-        }
-        // Write the program name at the beginning
-        if mem.seek(SeekFrom::Start(arg_start as u64)).is_ok() {
-            let _ = mem.write(prog_name);
-        }
-    }
+    // ── 3. Write program name at the start ──
+    let name = b"rtragent";
+    let copy_len = name.len().min(argv_bytes.len().saturating_sub(1));
+    argv_bytes[..copy_len].copy_from_slice(&name[..copy_len]);
+    argv_bytes[copy_len] = 0; // NUL-terminate
 }
 
 /// Parse `arg_start` and `arg_end` (fields 48 & 49) from `/proc/self/stat`.
