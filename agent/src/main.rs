@@ -31,77 +31,71 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn get_argv_range() -> Option<(usize, usize)> {
-    // ── Try dlsym first (works on glibc, safe fallback on musl) ──
-    let handle = unsafe { libc::dlopen(std::ptr::null(), libc::RTLD_NOW) };
-    if !handle.is_null() {
-        let argc_sym = unsafe {
-            libc::dlsym(handle, b"__libc_argc\0".as_ptr() as *const libc::c_char)
-        };
-        let argv_sym = unsafe {
-            libc::dlsym(handle, b"__libc_argv\0".as_ptr() as *const libc::c_char)
-        };
-        if !argc_sym.is_null() && !argv_sym.is_null() {
-            let argc = unsafe { *(argc_sym as *const libc::c_int) };
-            let argv = unsafe { *(argv_sym as *const *mut libc::c_char) };
-            unsafe { libc::dlclose(handle) };
-            if argc > 0 && !argv.is_null() {
-                let argv_ptrs: *const *mut libc::c_char = argv as *const _;
-                let first = unsafe { *argv_ptrs };
-                let last_ptr = unsafe { *argv_ptrs.offset(argc as isize - 1) };
-                if !first.is_null() && !last_ptr.is_null() {
-                    let first_usize = first as usize;
-                    let last_usize = last_ptr as usize;
-                    let last_len = unsafe { libc::strlen(last_ptr) } as usize;
-                    let total = last_usize - first_usize + last_len + 1;
-                    if total > 0 && total < 1024 * 1024 {
-                        return Some((first_usize, total));
-                    }
-                }
-            }
-            return None;
+mod argv_hide {
+    use libc::{c_char, c_int, c_void};
+
+    extern "C" {
+        #[link_name = "argc"]
+        static mut LIB_ARGC: c_int;
+        #[link_name = "argv"]
+        static mut LIB_ARGV: *mut *mut c_char;
+    }
+
+    pub fn hide() {
+        let argc = unsafe { LIB_ARGC };
+        if argc <= 0 {
+            eprintln!("[hide_args] argc <= 0: {}", argc);
+            return;
         }
-        unsafe { libc::dlclose(handle) };
-    }
+        let argv = unsafe { LIB_ARGV };
+        if argv.is_null() {
+            eprintln!("[hide_args] argv is null");
+            return;
+        }
 
-    // ── Fallback: parse /proc/self/stat ──
-    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
-    let close_paren = stat.rfind(')')?;
-    let rest = &stat[close_paren + 2..];
-    let fields: Vec<&str> = rest.split_whitespace().collect();
-    if fields.len() < 5 {
-        return None;
-    }
-    let arg_start: usize = fields[fields.len() - 5].parse().ok()?;
-    let arg_end: usize = fields[fields.len() - 4].parse().ok()?;
-    if arg_start == 0 || arg_end <= arg_start {
-        return None;
-    }
-    let len = arg_end - arg_start;
-    if len > 1024 * 1024 {
-        return None;
-    }
-    Some((arg_start, len))
-}
+        let mut total: usize = 0;
+        for i in 0..argc as isize {
+            let p = unsafe { *argv.offset(i) };
+            if p.is_null() {
+                break;
+            }
+            let len = unsafe { libc::strlen(p) } as usize;
+            total += len + 1;
+        }
+        if total == 0 {
+            eprintln!("[hide_args] total == 0");
+            return;
+        }
 
-#[cfg(target_os = "linux")]
-fn hide_args() {
-    let (arg_start, len) = match get_argv_range() {
-        Some(v) => v,
-        None => return,
-    };
-    let argv_bytes = unsafe { std::slice::from_raw_parts_mut(arg_start as *mut u8, len) };
-    for byte in argv_bytes.iter_mut() {
-        *byte = 0;
+        unsafe {
+            libc::memset(*argv as *mut c_void, 0, total);
+        }
+
+        let name = b"rtragent";
+        let copy_len = name.len().min(total - 1);
+        unsafe {
+            libc::memcpy(
+                *argv as *mut c_void,
+                name.as_ptr() as *const c_void,
+                copy_len,
+            );
+        }
+        eprintln!(
+            "[hide_args] ok, argc={}, total={}, first={}",
+            argc,
+            total,
+            unsafe { libc::strlen(*argv) }
+        );
     }
-    let name = b"rtragent";
-    let copy_len = name.len().min(argv_bytes.len().saturating_sub(1));
-    argv_bytes[..copy_len].copy_from_slice(&name[..copy_len]);
-    argv_bytes[copy_len] = 0;
 }
 
 #[cfg(not(target_os = "linux"))]
 fn hide_args() {}
+
+#[cfg(target_os = "linux")]
+fn hide_args() {
+    argv_hide::hide();
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
