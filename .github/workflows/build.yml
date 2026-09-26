@@ -81,9 +81,9 @@ jobs:
 
       - name: Install Rust (padavan toolchain)
         if: matrix.builder == 'padavan'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          targets: ${{ matrix.target }}
+          components: rust-src
 
       - name: Download Padavan toolchain
         if: matrix.builder == 'padavan'
@@ -96,7 +96,7 @@ jobs:
         if: matrix.builder == 'padavan'
         env:
           CARGO_TARGET_MIPSEL_UNKNOWN_LINUX_UCLIBC_LINKER: mipsel-linux-uclibc-gcc
-        run: cargo build --release -p ${{ matrix.binary }} --target ${{ matrix.target }}
+        run: cargo build -Z build-std --release -p ${{ matrix.binary }} --target ${{ matrix.target }}
 
       - name: Rename & Verify
         run: |
