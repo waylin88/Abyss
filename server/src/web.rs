@@ -54,20 +54,13 @@ pub async fn run(
     manager: Arc<AgentManager>,
     addr: &str,
     password: &str,
-    data_dir: &str,
-    cli_domain: &str,
 ) -> anyhow::Result<()> {
-    // Ensure data directory exists
-    let data_path = PathBuf::from(data_dir);
+    // Ensure data directory exists (./data by default)
+    let data_path = PathBuf::from("./data");
     let _ = std::fs::create_dir_all(&data_path);
 
-    // Load config (CLI domain takes precedence over saved config)
-    let mut cfg = ServerConfig::load(&data_path);
-    if !cli_domain.is_empty() {
-        cfg.domain = cli_domain.to_string();
-        cfg.save(&data_path);
-    }
-
+    // Load config from file (no CLI override)
+    let cfg = ServerConfig::load(&data_path);
     let domain = Arc::new(Mutex::new(cfg.domain.clone()));
 
     let sessions = Arc::new(Mutex::new(HashMap::new()));

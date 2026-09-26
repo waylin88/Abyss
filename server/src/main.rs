@@ -1,7 +1,9 @@
 mod agent_manager;
+mod ip_lookup;
 mod web;
 
 use clap::Parser;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -24,12 +26,21 @@ struct Cli {
 
     #[arg(long, default_value = "18080", help = "HTTP proxy auto-routing port. 0 = disabled. Routes requests by Host header to agent's port 80.")]
     http_proxy_port: u16,
+}
 
-    #[arg(long, default_value = "", help = "Domain suffix for HTTP proxy (e.g., dome.com). Requests with Host: <agent_id>.dome.com are routed to that agent.")]
-    http_proxy_domain: String,
-
-    #[arg(long, default_value = "./data", help = "Directory for persisting config and data.")]
-    data_dir: String,
+/// Load domain from data/config.json
+fn load_domain(data_dir: &std::path::Path) -> String {
+    let path = data_dir.join("config.json");
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+            return cfg
+                .get("domain")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+        }
+    }
+    String::new()
 }
 
 #[tokio::main]
@@ -39,15 +50,33 @@ async fn main() -> anyhow::Result<()> {
     let allow: Vec<String> = if cli.allow_tokens.is_empty() {
         Vec::new()
     } else {
-        cli.allow_tokens.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        cli.allow_tokens
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     };
     let block: Vec<String> = if cli.block_tokens.is_empty() {
         Vec::new()
     } else {
-        cli.block_tokens.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        cli.block_tokens
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     };
 
-    let manager = Arc::new(agent_manager::AgentManager::new());
+    // Ensure data directory exists
+    let data_dir = PathBuf::from("./data");
+    std::fs::create_dir_all(&data_dir)?;
+
+    // Load domain from config file for HTTP proxy
+    let domain = load_domain(&data_dir);
+
+    // Initialize IP lookup
+    let ip_lookup = ip_lookup::IpLookup::new(&data_dir);
+
+    let manager = Arc::new(agent_manager::AgentManager::new(ip_lookup));
 
     let mgr = manager.clone();
     let addr = cli.agent_addr.clone();
@@ -60,10 +89,10 @@ async fn main() -> anyhow::Result<()> {
     // Start HTTP proxy if port is configured
     if cli.http_proxy_port > 0 {
         let mgr = manager.clone();
-        let domain = cli.http_proxy_domain.clone();
+        let domain_clone = domain.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                agent_manager::start_http_proxy(mgr, cli.http_proxy_port, &domain).await
+                agent_manager::start_http_proxy(mgr, cli.http_proxy_port, &domain_clone).await
             {
                 eprintln!("[server] HTTP proxy error: {}", e);
             }
@@ -77,10 +106,10 @@ async fn main() -> anyhow::Result<()> {
         println!(
             "[server] HTTP proxy on    port {} (domain: {})",
             cli.http_proxy_port,
-            if cli.http_proxy_domain.is_empty() {
+            if domain.is_empty() {
                 "(any)"
             } else {
-                &cli.http_proxy_domain
+                &domain
             }
         );
     }
@@ -94,6 +123,6 @@ async fn main() -> anyhow::Result<()> {
         println!("[server] web password:  {} (login required)", cli.password);
     }
 
-    web::run(manager, &web_addr, &cli.password, &cli.data_dir, &cli.http_proxy_domain).await?;
+    web::run(manager, &web_addr, &cli.password).await?;
     Ok(())
 }

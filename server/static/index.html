@@ -11,18 +11,25 @@
   h2 { font-size: 14px; margin-bottom: 8px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; }
   .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 320px 1fr; gap: 20px; }
   .panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
-  .agent-item { padding: 8px 10px; border: 1px solid #30363d; border-radius: 6px; margin-bottom: 4px; cursor: pointer; transition: all 0.15s; display:flex; align-items:center; gap:6px; }
+  .agent-item { padding: 6px 10px; border: 1px solid #30363d; border-radius: 6px; margin-bottom: 4px; cursor: pointer; transition: all 0.15s; display:flex; align-items:center; gap:4px; }
   .agent-item:hover { border-color: #58a6ff; }
   .agent-item.active { border-color: #238636; background: #0d2818; }
+  .agent-item-left { display:flex; align-items:center; gap:4px; flex:1; min-width:0; overflow:hidden; }
   .agent-name { font-weight: bold; font-size: 13px; color: #e6edf3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .agent-id-label { font-size: 11px; color: #8b949e; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex-shrink:1; min-width:0; }
   .agent-dot { flex-shrink:0; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #238636; }
   .agent-dot-offline { background: #484f58; }
   .agent-item-offline { opacity: 0.7; cursor: default !important; }
   .agent-item-offline:hover { border-color: #30363d !important; }
-  .detail-row { display:flex; padding:4px 0; font-size:13px; }
-  .detail-label { color:#8b949e; width:80px; flex-shrink:0; }
-  .detail-value { color:#e6edf3; }
+  .agent-list-ping { flex-shrink:0; }
+  /* Horizontal detail panel */
+  .dhoriz { display:flex; flex-wrap:wrap; gap:4px 0; }
+  .dhoriz-item { display:flex; align-items:center; gap:4px; padding:3px 12px 3px 0; border-right:1px solid #30363d; margin-right:12px; }
+  .dhoriz-item:last-child { border-right:none; margin-right:0; }
+  .dlabel { color:#8b949e; font-size:12px; white-space:nowrap; }
+  .dvalue { color:#e6edf3; font-size:13px; font-weight:500; white-space:nowrap; }
+  .dvalue-online { color:#3fb950; }
+  .dvalue-offline { color:#f85149; }
   .cmd-area { width: 100%; min-height: 80px; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 8px; font-family: monospace; font-size: 13px; resize: vertical; }
   button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 13px; margin-top: 8px; }
   button:hover { background: #2ea043; }
@@ -89,12 +96,8 @@
   <div>
     <!-- Agent detail panel (hidden when no agent selected) -->
     <div id="detail-panel" class="panel section" style="display:none">
-      <h2>设备信息</h2>
-      <div id="detail-content"></div>
-      <div style="margin-top:8px">
-        <button class="secondary" id="detail-ping-btn" onclick="pingCurrentAgent()" style="margin:0;margin-right:6px">检测连通</button>
-        <span id="detail-ping-result" style="font-size:12px;color:#8b949e;margin-left:4px"></span>
-      </div>
+      <h2>设备信息<span id="detail-group" style="color:#8b949e;font-weight:normal;font-size:12px;margin-left:4px"></span></h2>
+      <div id="detail-content" class="dhoriz"></div>
     </div>
     <div class="panel section">
       <h2>Shell 命令执行</h2>
@@ -180,7 +183,7 @@ function updateWebUrl() {
   if (!currentDomain) {
     urlDisplay.style.display = 'none';
     noAgent.style.display = 'block';
-    noAgent.textContent = '未配置域名，请在启动时设置 --http-proxy-domain';
+    noAgent.textContent = '未配置域名，请在 「设置」 中填写域名';
     return;
   }
 
@@ -329,10 +332,17 @@ async function refreshAgents() {
       const isActive = currentAgentData && currentAgentData.id === a.id;
       const itemClass = 'agent-item' + (isActive ? ' active' : '') + (a.online ? '' : ' agent-item-offline');
 
+      const pingHtml = a.online
+        ? `<span class="agent-list-ping"><button class="ping-btn" onclick="event.stopPropagation(); pingAgent('${a.id}', this)">检测</button></span>`
+        : '<span class="agent-list-ping" style="font-size:11px;color:#8b949e">离线</span>';
+
       return `<div class="${itemClass}" onclick="${a.online ? `selectAgent('${a.id}')` : ''}">
-        <span class="${dotClass}"></span>
-        <span class="agent-name">${a.name}</span>
-        <span class="agent-id-label">${a.id}</span>
+        <span class="agent-item-left">
+          <span class="${dotClass}"></span>
+          <span class="agent-name">${a.name}</span>
+          <span class="agent-id-label">${a.id}</span>
+        </span>
+        ${pingHtml}
       </div>`;
     }).join('');
   } catch(e) { console.error(e); }
@@ -422,58 +432,34 @@ function renderDetail(agent) {
   const panel = document.getElementById('detail-panel');
   panel.style.display = 'block';
 
+  // Title suffix: · 分组：xxx
+  document.getElementById('detail-group').textContent = '· 分组：' + (agent.token || '(无)');
+
+  // Status badge
+  const statusHtml = agent.online
+    ? '<span class="dvalue dvalue-online">🟢 在线</span>'
+    : '<span class="dvalue dvalue-offline">🔴 离线</span>';
+
+  // IP location string
+  const ipLoc = agent.ip_location ? ` (${agent.ip_location})` : '';
+
+  // Row 1: 名称、ID、状态
+  // Row 2: IP + IP归属地
+  // Row 3: 上线时间、时长、离线时间
   const rows = [
-    { label: '分组', value: agent.token || '(无)' },
-    { label: '名称', value: agent.name },
-    { label: 'ID', value: agent.id },
-    { label: 'IP 地址', value: agent.addr },
-    { label: '上线时间', value: agent.online ? fmtTime(agent.connected_at) : '-' },
-    { label: '在线时长', value: agent.online ? fmtUptime(agent.uptime_secs) : '-' },
-    { label: '状态', value: agent.online ? '🟢 在线' : '🔴 离线' },
-    { label: '离线时间', value: agent.online ? '-' : fmtLastSeen(agent.last_seen) },
+    // Row 1
+    `<div class="dhoriz-item"><span class="dlabel">名称</span><span class="dvalue">${agent.name}</span></div>
+     <div class="dhoriz-item"><span class="dlabel">ID</span><span class="dvalue">${agent.id}</span></div>
+     <div class="dhoriz-item"><span class="dlabel">状态</span>${statusHtml}</div>`,
+    // Row 2
+    `<div class="dhoriz-item" style="border-right:none"><span class="dlabel">IP</span><span class="dvalue">${agent.addr}${ipLoc}</span></div>`,
+    // Row 3
+    `<div class="dhoriz-item"><span class="dlabel">上线时间</span><span class="dvalue">${agent.online ? fmtTime(agent.connected_at) : '-'}</span></div>
+     <div class="dhoriz-item"><span class="dlabel">在线时长</span><span class="dvalue">${agent.online ? fmtUptime(agent.uptime_secs) : '-'}</span></div>
+     <div class="dhoriz-item"><span class="dlabel">离线时间</span><span class="dvalue">${agent.online ? '-' : fmtLastSeen(agent.last_seen)}</span></div>`,
   ];
 
-  document.getElementById('detail-content').innerHTML = rows.map(r =>
-    `<div class="detail-row"><span class="detail-label">${r.label}</span><span class="detail-value">${r.value}</span></div>`
-  ).join('');
-
-  // Ping button state
-  const pingBtn = document.getElementById('detail-ping-btn');
-  const pingResult = document.getElementById('detail-ping-result');
-  pingBtn.disabled = !agent.online;
-  pingResult.textContent = '';
-}
-
-async function pingCurrentAgent() {
-  if (!currentAgentData || !currentAgentData.online) return;
-  const btn = document.getElementById('detail-ping-btn');
-  const result = document.getElementById('detail-ping-result');
-  btn.disabled = true;
-  result.textContent = '检测中…';
-  result.style.color = '#8b949e';
-  try {
-    const res = await fetch('/api/ping', {
-      method: 'POST',
-      headers: getHeaders(),
-      body: JSON.stringify({agent: currentAgent})
-    });
-    if (res.status === 401) { handleUnauth(); return; }
-    const data = await res.json();
-    if (data.ok) {
-      result.textContent = '✓ 在线';
-      result.style.color = '#3fb950';
-    } else {
-      result.textContent = '✗ 无响应';
-      result.style.color = '#f85149';
-    }
-  } catch(e) {
-    result.textContent = '✗ 检测失败';
-    result.style.color = '#f85149';
-  }
-  setTimeout(() => {
-    btn.disabled = false;
-    result.textContent = '';
-  }, 3000);
+  document.getElementById('detail-content').innerHTML = rows.map(r => `<div style="display:flex;flex-wrap:wrap;width:100%">${r}</div>`).join('');
 }
 
 // ---------- Exec ----------

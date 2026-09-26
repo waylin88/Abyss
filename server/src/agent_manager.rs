@@ -8,6 +8,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+use crate::ip_lookup::IpLookup;
+
 /// Set TCP keepalive so a dead connection (kill -9, power loss) is
 /// detected within ~12 minutes rather than the OS default of 2 hours.
 /// The 30-minute application heartbeat catches any remaining cases.
@@ -29,6 +31,8 @@ pub struct AgentManager {
     forwards: Mutex<HashMap<String, ForwardHandle>>,
     /// Manual ping awaits — keyed by agent_id
     pending_pings: Mutex<HashMap<String, oneshot::Sender<bool>>>,
+    /// IP geolocation lookup (纯真IP库)
+    ip_lookup: IpLookup,
 }
 
 pub struct AgentHandle {
@@ -36,6 +40,7 @@ pub struct AgentHandle {
     pub addr: SocketAddr,
     pub connected_at: std::time::Instant,
     pub tx: mpsc::Sender<Vec<u8>>,
+    pub ip_location: String,
 }
 
 pub struct TunnelHandle {
@@ -75,7 +80,7 @@ pub struct ForwardConflict {
 }
 
 impl AgentManager {
-    pub fn new() -> Self {
+    pub fn new(ip_lookup: IpLookup) -> Self {
         Self {
             agents: Mutex::new(HashMap::new()),
             offline_agents: Mutex::new(Vec::new()),
@@ -84,6 +89,7 @@ impl AgentManager {
             pending_results: Mutex::new(HashMap::new()),
             forwards: Mutex::new(HashMap::new()),
             pending_pings: Mutex::new(HashMap::new()),
+            ip_lookup,
         }
     }
 
@@ -115,6 +121,7 @@ impl AgentManager {
                         .unwrap_or_default()
                         .as_secs()
                         - v.connected_at.elapsed().as_secs(),
+                    ip_location: v.ip_location.clone(),
                 });
             }
         }
@@ -324,6 +331,7 @@ impl AgentManager {
                         addr: v.addr,
                         connected_at: v.connected_at,
                         tx: v.tx.clone(),
+                        ip_location: v.ip_location.clone(),
                     }));
                 }
             }
@@ -372,6 +380,8 @@ pub struct AgentInfo {
     pub last_seen: u64,
     /// Approximate unix epoch seconds when the agent connected (online only)
     pub connected_at: u64,
+    /// IP geolocation string (e.g., "中国 广东省 深圳市 电信")
+    pub ip_location: String,
 }
 
 async fn read_line(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<String> {
@@ -488,6 +498,9 @@ async fn handle_agent(
     let (reader, mut writer) = socket.into_split();
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(256);
 
+    // Look up IP geolocation
+    let ip_location = manager.ip_lookup.lookup(&peer.ip().to_string()).unwrap_or_default();
+
     manager
         .register(
             &provided_token,
@@ -497,6 +510,7 @@ async fn handle_agent(
                 addr: peer,
                 connected_at: std::time::Instant::now(),
                 tx,
+                ip_location,
             },
         )
         .await;
@@ -512,7 +526,7 @@ async fn handle_agent(
 
     let read_mgr = manager.clone();
     let read_agent_id = qualified_id.clone();
-    let read_token = provided_token.clone();
+    let read_token = provided_token;
     let read_task = tokio::spawn(async move {
         let mut reader = reader;
         let mut buf: Vec<u8> = Vec::with_capacity(4096);
@@ -687,6 +701,7 @@ async fn handle_agent(
             online: false,
             last_seen,
             connected_at: 0,
+            ip_location: String::new(),
         })
         .await;
 
