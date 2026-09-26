@@ -29,7 +29,7 @@ async fn index() -> Html<&'static str> {
 }
 
 async fn list_agents(State(mgr): State<Arc<AgentManager>>) -> Json<Vec<AgentInfo>> {
-    Json(mgr.list())
+    Json(mgr.list().await)
 }
 
 #[derive(Deserialize)]
@@ -49,10 +49,16 @@ async fn exec_cmd(
     Json(req): Json<ExecReq>,
 ) -> impl IntoResponse {
     match mgr.exec(&req.agent, &req.cmd).await {
-        Ok(r) => Json(ExecResp { code: r.code, output: r.output }),
+        Ok(r) => (
+            StatusCode::OK,
+            Json(ExecResp { code: r.code, output: r.output }),
+        ),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(ExecResp { code: -1, output: e.to_string() }),
+            Json(ExecResp {
+                code: -1,
+                output: e.to_string(),
+            }),
         ),
     }
 }

@@ -87,8 +87,8 @@ impl AgentManager {
         }
     }
 
-    pub async fn forward(&self, agent_id: &str, local_addr: &str, server_port: u16) -> anyhow::Result<()> {
-        start_port_forward(self.clone(), agent_id.to_string(), local_addr.to_string(), server_port).await
+    pub async fn forward(self: &Arc<Self>, agent_id: &str, local_addr: &str, server_port: u16) -> anyhow::Result<()> {
+        start_port_forward(Arc::clone(self), agent_id.to_string(), local_addr.to_string(), server_port).await
     }
 
     pub async fn register(&self, id: String, handle: AgentHandle) {
@@ -203,12 +203,9 @@ async fn handle_agent(
         let mut tmp = [0u8; 4096];
 
         loop {
-            let mut newline_pos: Option<usize> = None;
-
-            loop {
+            let pos = loop {
                 if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-                    newline_pos = Some(pos);
-                    break;
+                    break pos;
                 }
                 if buf.len() > 65536 {
                     eprintln!("[server] {} protocol error: buffer too large", read_agent_id);
@@ -222,9 +219,8 @@ async fn handle_agent(
                         return;
                     }
                 }
-            }
+            };
 
-            let pos = newline_pos.unwrap();
             let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
             let line = String::from_utf8_lossy(&line_bytes).trim_end_matches('\n').to_string();
 
