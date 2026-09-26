@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpStream};
+use std::net::TcpStream;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -66,7 +66,6 @@ fn run_session(
     let _ = stream.set_read_timeout(Some(Duration::from_millis(TICK_MS)));
     let mut buf: Vec<u8> = Vec::with_capacity(BUF_SIZE);
     let mut tmp = [0u8; BUF_SIZE];
-    let mut pong_pending = false;
     let mut last_ping = std::time::Instant::now();
 
     loop {
@@ -77,7 +76,6 @@ fn run_session(
             }
             Ok(n) => {
                 buf.extend_from_slice(&tmp[..n]);
-                pong_pending = false;
             }
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::WouldBlock
@@ -114,7 +112,6 @@ fn run_session(
                             let _ = stream.flush();
                         }
                         Some("PONG") => {
-                            pong_pending = false;
                         }
                         Some("EXEC") => {
                             if parts.len() >= 3 {
@@ -134,7 +131,7 @@ fn run_session(
                                 let local_addr = parts[2].to_string();
 
                                 match TcpStream::connect(&local_addr) {
-                                    Ok(mut local) => {
+                                    Ok(local) => {
                                         let _ = local.set_nodelay(true);
                                         let _ = local
                                             .set_read_timeout(Some(Duration::from_millis(TICK_MS)));
