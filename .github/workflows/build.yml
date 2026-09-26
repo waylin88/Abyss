@@ -30,6 +30,10 @@ jobs:
             binary: rtragent
             target: mipsel-unknown-linux-musl
             cross: true
+          - job_name: rtragent-mipsel-uclibc
+            binary: rtragent
+            target: mipsel-linux-uclibc
+            cross: false
           - job_name: rtragent-armv7
             binary: rtragent
             target: armv7-unknown-linux-musleabihf
@@ -48,7 +52,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust (native)
-        if: matrix.cross == false
+        if: matrix.cross == false && matrix.target != 'mipsel-linux-uclibc'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -63,8 +67,33 @@ jobs:
         if: matrix.cross == true
         run: cargo install cross --locked
 
+      - name: Install mipsel-linux-uclibc toolchain
+        if: matrix.target == 'mipsel-linux-uclibc'
+        run: |
+          wget -q https://github.com/hanwckf/padavan-toolchain/releases/download/v1.0/mipsel-linux-uclibc.tar.xz
+          tar xf mipsel-linux-uclibc.tar.xz
+          ls -la
+          TOOLCHAIN_BIN=$(find . -name "mipsel-linux-uclibc-gcc" -exec dirname {} \; | head -1)
+          echo "TOOLCHAIN_BIN=$TOOLCHAIN_BIN"
+          echo "${TOOLCHAIN_BIN}" >> $GITHUB_PATH
+          mipsel-linux-uclibc-gcc --version
+
+      - name: Build uClibc target
+        if: matrix.target == 'mipsel-linux-uclibc'
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustup component add rust-src --toolchain nightly
+          cat > .cargo/config.toml <<'EOF'
+          [target.mipsel-unknown-linux-gnu]
+          linker = "mipsel-linux-uclibc-gcc"
+          EOF
+          RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static" \
+          cargo +nightly build --release -p rtragent \
+            --target mipsel-unknown-linux-gnu \
+            -Zbuild-std=std,core,alloc
+
       - name: Build (native)
-        if: matrix.cross == false
+        if: matrix.cross == false && matrix.target != 'mipsel-linux-uclibc'
         run: cargo build --release -p ${{ matrix.binary }} --target ${{ matrix.target }}
 
       - name: Build (cross)
@@ -77,7 +106,11 @@ jobs:
         run: |
           BIN="${{ matrix.binary }}"
           TGT="${{ matrix.target }}"
-          SRC="target/${TGT}/release/${BIN}"
+          if [ "$TGT" = "mipsel-linux-uclibc" ]; then
+            SRC="target/mipsel-unknown-linux-gnu/release/${BIN}"
+          else
+            SRC="target/${TGT}/release/${BIN}"
+          fi
           OUT="${BIN}-${TGT}"
           if command -v llvm-strip &>/dev/null; then
             llvm-strip "$SRC" -o "$OUT" 2>/dev/null || cp "$SRC" "$OUT"
