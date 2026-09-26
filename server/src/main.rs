@@ -10,10 +10,10 @@ use std::sync::Arc;
 #[derive(Parser)]
 #[command(name = "rtrserver", version, about = "Router remote management server")]
 struct Cli {
-    #[arg(long, default_value = "0.0.0.0:9527")]
+    #[arg(long, default_value = "0.0.0.0:46293")]
     agent_addr: String,
 
-    #[arg(long, default_value = "0.0.0.0:8080")]
+    #[arg(long, default_value = "0.0.0.0:33671")]
     web_addr: String,
 
     #[arg(long, default_value = "", help = "Comma-separated token whitelist. Only agents with these tokens are accepted. Empty = accept all.")]

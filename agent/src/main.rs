@@ -1,4 +1,5 @@
 mod crypto;
+mod dns;
 
 use std::collections::HashMap;
 use std::env;
@@ -38,7 +39,7 @@ fn main() {
         eprintln!("USAGE: rtragent --server <addr> [--token <token>] [--name <name>] [--id <id>] [--crypto-key <key>]");
         eprintln!();
         eprintln!("OPTIONS:");
-        eprintln!("  -s, --server <addr>     Server address (default: 127.0.0.1:9527)");
+        eprintln!("  -s, --server <addr>     Server address (default: dome.y-lin.wang:46293)");
         eprintln!("  -t, --token <token>     Auth token (optional)");
         eprintln!("  -n, --name <name>       Agent display name (default: router)");
         eprintln!("  -i, --id <id>           Unique device ID. Server uses it to");
@@ -46,6 +47,8 @@ fn main() {
         eprintln!("                           If not set, server generates one.");
         eprintln!("  -k, --crypto-key <key>  XOR encryption key (must match server).");
         eprintln!("                           Empty = disabled (default).");
+        eprintln!("  -d, --dns <dns>         Custom DNS server (default: 223.5.5.5). Override");
+        eprintln!("                           when the default DNS cannot resolve the domain.");
         eprintln!("  -h, --help              Print this help");
         eprintln!();
         eprintln!("EXAMPLE:");
@@ -55,7 +58,7 @@ fn main() {
 
     let server = parse_arg(&args, "--server")
         .or_else(|| parse_arg(&args, "-s"))
-        .unwrap_or_else(|| "127.0.0.1:9527".to_string());
+        .unwrap_or_else(|| "dome.y-lin.wang:46293".to_string());
     let token = parse_arg(&args, "--token")
         .or_else(|| parse_arg(&args, "-t"))
         .unwrap_or_default();
@@ -68,15 +71,22 @@ fn main() {
     let crypto_key = parse_arg(&args, "--crypto-key")
         .or_else(|| parse_arg(&args, "-k"))
         .unwrap_or_default();
+    let dns_server = parse_arg(&args, "--dns")
+        .or_else(|| parse_arg(&args, "-d"))
+        .unwrap_or_else(|| "223.5.5.5".to_string());
 
     let cipher = XorCipher::new(&crypto_key);
     if cipher.is_enabled() {
         eprintln!("[rtragent] XOR encryption enabled");
     }
 
+    let mut resolver = dns::DnsResolver::new(&dns_server);
+    eprintln!("[rtragent] DNS server: {}", dns_server);
+
     loop {
-        eprintln!("[rtragent] connecting to {} as {}", server, name);
-        match TcpStream::connect(&server) {
+        let server_addr = dns::resolve_server_addr(&server, &mut resolver);
+        eprintln!("[rtragent] connecting to {} as {}", server_addr, name);
+        match TcpStream::connect(&server_addr) {
             Ok(stream) => {
                 let _ = stream.set_nodelay(true);
 
