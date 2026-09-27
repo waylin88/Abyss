@@ -433,8 +433,8 @@ fn run_session(
                         Some("EXEC") => {
                             if parts.len() >= 3 {
                                 let op_id = parts[1];
-                                let cmd = parts[2];
-                                let (code, out) = run_cmd(cmd);
+                                let cmd = parts[2..].join(" ");
+                                let (code, out) = run_cmd(&cmd);
                                 let header = format!("EXEC_RESULT {} {}\n", op_id, code);
                                 xor_write(stream, header.as_bytes(), cipher);
                                 xor_write(stream, out.as_bytes(), cipher);
