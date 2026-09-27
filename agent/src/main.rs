@@ -186,14 +186,19 @@ fn set_tcp_keepalive(_stream: &std::net::TcpStream) {}
 
 #[cfg(target_arch = "mipsel")]
 fn auto_name() -> String {
-    Command::new("nvram")
-        .args(["get", "productid"])
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "router".to_string())
+    let mut result = String::new();
+    if let Ok(o) = Command::new("nvram").args(["get", "productid"]).output() {
+        let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        eprintln!("[rtragent] nvram productid exit={}: {:?}", o.status, out);
+        if !out.is_empty() {
+            result = out;
+        }
+    }
+    if result.is_empty() {
+        eprintln!("[rtragent] auto_name fallback: router");
+        result = "router".to_string();
+    }
+    result
 }
 
 #[cfg(not(target_arch = "mipsel"))]
@@ -203,24 +208,27 @@ fn auto_name() -> String {
 
 #[cfg(target_arch = "mipsel")]
 fn auto_id() -> String {
-    let output = Command::new("lan_eeprom_mac").output().ok();
-    if let Some(o) = output {
-        if let Ok(text) = String::from_utf8(o.stdout) {
-            if let Some(mac) = text.lines().find_map(|line| {
-                let idx = line.rfind(':')?;
-                let mac = line[idx + 1..].trim();
-                if !mac.is_empty() && mac.contains(':') {
-                    Some(mac.to_lowercase().replace(':', ""))
-                } else {
-                    None
-                }
-            }) {
-                if !mac.is_empty() {
-                    return mac;
-                }
+    let mut raw = String::new();
+    if let Ok(o) = Command::new("lan_eeprom_mac").output() {
+        raw.push_str(&String::from_utf8_lossy(&o.stdout));
+        raw.push_str(&String::from_utf8_lossy(&o.stderr));
+        eprintln!("[rtragent] lan_eeprom_mac exit={}, output={:?}", o.status, raw);
+    } else {
+        eprintln!("[rtragent] lan_eeprom_mac command not found");
+    }
+
+    for line in raw.lines() {
+        for word in line.split(|c: char| !c.is_ascii_hexdigit() && c != ':') {
+            let colons: Vec<&str> = word.split(':').filter(|s| !s.is_empty()).collect();
+            if colons.len() == 6 && colons.iter().all(|s| s.len() == 2) {
+                let mac = colons.join("").to_lowercase();
+                eprintln!("[rtragent] auto_id from MAC: {}", mac);
+                return mac;
             }
         }
     }
+
+    eprintln!("[rtragent] auto_id fallback: empty");
     String::new()
 }
 
