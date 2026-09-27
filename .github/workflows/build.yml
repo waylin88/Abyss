@@ -6,11 +6,41 @@ on:
     tags: ['v*']
   workflow_dispatch:
     inputs:
-      targets:
-        description: '要编译的目标（逗号分隔），留空编译全部。可用值：abyss-server-x86_64, abyss-server-aarch64, abyss-mips, abyss-mipsel, abyss-armv7, abyss-x86_64, abyss-aarch64'
+      svr_x86_64:
+        description: 'abyss-server-x86_64'
         required: false
-        default: ''
-        type: string
+        default: true
+        type: boolean
+      svr_aarch64:
+        description: 'abyss-server-aarch64'
+        required: false
+        default: true
+        type: boolean
+      mips:
+        description: 'abyss-mips'
+        required: false
+        default: true
+        type: boolean
+      mipsel:
+        description: 'abyss-mipsel'
+        required: false
+        default: true
+        type: boolean
+      armv7:
+        description: 'abyss-armv7'
+        required: false
+        default: true
+        type: boolean
+      abi_x86_64:
+        description: 'abyss-x86_64'
+        required: false
+        default: true
+        type: boolean
+      abi_aarch64:
+        description: 'abyss-aarch64'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
   generate-matrix:
@@ -20,12 +50,29 @@ jobs:
     steps:
       - id: filter
         run: |
-          RESULT=$(echo '[{"job_name":"abyss-server-x86_64","binary":"abyss-server","target":"x86_64-unknown-linux-musl","builder":"cargo"},{"job_name":"abyss-server-aarch64","binary":"abyss-server","target":"aarch64-unknown-linux-gnu","builder":"cross"},{"job_name":"abyss-mips","binary":"abyss","target":"mips-unknown-linux-musl","builder":"musl","musl_uri":"mips-linux-muslsf-cross","musl_url":"mips-linux-muslsf","use_nightly":true},{"job_name":"abyss-mipsel","binary":"abyss","target":"mipsel-unknown-linux-musl","builder":"musl","musl_uri":"mipsel-linux-muslsf-cross","musl_url":"mipsel-linux-muslsf","use_nightly":true},{"job_name":"abyss-armv7","binary":"abyss","target":"armv7-unknown-linux-musleabihf","builder":"musl","musl_uri":"armv7l-linux-musleabihf-cross","musl_url":"armv7l-linux-musleabihf","use_nightly":false},{"job_name":"abyss-x86_64","binary":"abyss","target":"x86_64-unknown-linux-musl","builder":"cargo"},{"job_name":"abyss-aarch64","binary":"abyss","target":"aarch64-unknown-linux-gnu","builder":"cross"}]' | jq -c --arg targets "${{ inputs.targets }}" '
-            ($targets | split(",") | map(gsub("^ *| *$"; "")) | map(select(. != ""))) as $wanted
-            | if ($wanted | length == 0) then .
-              else [.[] | select(.job_name as $n | $wanted | index($n))]
-              end
-          ')
+          ALL='[{"job_name":"abyss-server-x86_64","binary":"abyss-server","target":"x86_64-unknown-linux-musl","builder":"cargo"},{"job_name":"abyss-server-aarch64","binary":"abyss-server","target":"aarch64-unknown-linux-gnu","builder":"cross"},{"job_name":"abyss-mips","binary":"abyss","target":"mips-unknown-linux-musl","builder":"musl","musl_uri":"mips-linux-muslsf-cross","musl_url":"mips-linux-muslsf","use_nightly":true},{"job_name":"abyss-mipsel","binary":"abyss","target":"mipsel-unknown-linux-musl","builder":"musl","musl_uri":"mipsel-linux-muslsf-cross","musl_url":"mipsel-linux-muslsf","use_nightly":true},{"job_name":"abyss-armv7","binary":"abyss","target":"armv7-unknown-linux-musleabihf","builder":"musl","musl_uri":"armv7l-linux-musleabihf-cross","musl_url":"armv7l-linux-musleabihf","use_nightly":false},{"job_name":"abyss-x86_64","binary":"abyss","target":"x86_64-unknown-linux-musl","builder":"cargo"},{"job_name":"abyss-aarch64","binary":"abyss","target":"aarch64-unknown-linux-gnu","builder":"cross"}]'
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RESULT=$(echo "$ALL" | jq -c \
+              --argjson svr_x86_64 "${{ inputs.svr_x86_64 }}" \
+              --argjson svr_aarch64 "${{ inputs.svr_aarch64 }}" \
+              --argjson mips "${{ inputs.mips }}" \
+              --argjson mipsel "${{ inputs.mipsel }}" \
+              --argjson armv7 "${{ inputs.armv7 }}" \
+              --argjson abi_x86_64 "${{ inputs.abi_x86_64 }}" \
+              --argjson abi_aarch64 "${{ inputs.abi_aarch64 }}" \
+              '[.[] | select(
+                (.job_name == "abyss-server-x86_64" and $svr_x86_64) or
+                (.job_name == "abyss-server-aarch64" and $svr_aarch64) or
+                (.job_name == "abyss-mips" and $mips) or
+                (.job_name == "abyss-mipsel" and $mipsel) or
+                (.job_name == "abyss-armv7" and $armv7) or
+                (.job_name == "abyss-x86_64" and $abi_x86_64) or
+                (.job_name == "abyss-aarch64" and $abi_aarch64)
+              )]')
+          else
+            RESULT="$ALL"
+          fi
 
           echo "matrix=$RESULT" >> "$GITHUB_OUTPUT"
           echo "Filtered matrix:"
