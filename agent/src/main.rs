@@ -251,8 +251,23 @@ fn main() {
         cipher.reset();
         let server_addr = dns::resolve_server_addr(&server, &mut resolver);
         eprintln!("[rtragent] connecting to server as {}", name);
-        match TcpStream::connect_timeout(&server_addr, Duration::from_secs(10)) {
-            Ok(stream) => {
+        let socket_addrs: Vec<std::net::SocketAddr> = match std::net::ToSocketAddrs::to_socket_addrs(&server_addr) {
+            Ok(iter) => iter.collect(),
+            Err(_) => {
+                eprintln!("[rtragent] invalid server address");
+                thread::sleep(Duration::from_secs(5));
+                continue;
+            }
+        };
+        let mut connected = None;
+        for sa in &socket_addrs {
+            if let Ok(s) = TcpStream::connect_timeout(sa, Duration::from_secs(10)) {
+                connected = Some(s);
+                break;
+            }
+        }
+        match connected {
+            Some(stream) => {
                 let _ = stream.set_nodelay(true);
                 #[cfg(not(windows))]
                 set_tcp_keepalive(&stream);
@@ -277,7 +292,7 @@ fn main() {
                     eprintln!("[rtragent] session terminated");
                 }
             }
-            Err(e) => {
+            None => {
                 eprintln!("[rtragent] connect failed, retry in 5s...");
             }
         }
@@ -396,14 +411,27 @@ fn run_session(
                                 let tunnel_id = parts[1].to_string();
                                 let local_addr = parts[2].to_string();
                                 let tx = tx_pending.clone();
-                                thread::spawn(move || {
-                                    let result = TcpStream::connect_timeout(
-                                        &local_addr,
-                                        Duration::from_secs(5),
-                                    )
-                                    .map_err(|e| e.to_string());
-                                    let _ = tx.send((tunnel_id, result));
-                                });
+                                if let Ok(sock_addrs) = std::net::ToSocketAddrs::to_socket_addrs(&local_addr) {
+                                    let sa: Vec<_> = sock_addrs.collect();
+                                    thread::spawn(move || {
+                                        let mut res = Err("no addresses".to_string());
+                                        for addr in sa {
+                                            if let Ok(s) = TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+                                                res = Ok(s);
+                                                break;
+                                            }
+                                        }
+                                        let _ = tx.send((tunnel_id, res));
+                                    });
+                                } else {
+                                    eprintln!("[rtragent] tunnel {} invalid address", tunnel_id);
+                                    xor_write(
+                                        stream,
+                                        format!("TUN_CLOSE {}\n", tunnel_id).as_bytes(),
+                                        cipher,
+                                    );
+                                    let _ = stream.flush();
+                                }
                             }
                         }
                         Some("TUN_DATA") => {
