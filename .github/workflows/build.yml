@@ -34,13 +34,13 @@ jobs:
           if [ -z "$TARGETS" ]; then
             RESULT="$ALL"
           else
-            RESULT=$(echo "$ALL" | python3 -c "
-              import sys, json
-              all_items = json.load(sys.stdin)
-              wanted = set(t.strip() for t in '${{ inputs.targets }}'.split(',') if t.strip())
-              filtered = [item for item in all_items if item['job_name'] in wanted]
-              print(json.dumps(filtered))
-            ")
+            RESULT=$(python3 -c "
+import sys, json
+all_items = json.loads(sys.argv[1])
+wanted = set(t.strip() for t in sys.argv[2].split(',') if t.strip())
+filtered = [item for item in all_items if item['job_name'] in wanted]
+print(json.dumps(filtered))
+" "$ALL" "$TARGETS")
           fi
 
           echo "matrix=$RESULT" >> "$GITHUB_OUTPUT"
