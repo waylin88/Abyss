@@ -225,8 +225,8 @@ fn main() {
     let argv0 = args.first().cloned().unwrap_or_default();
     hide_args(&argv0);
 
-    if args.len() >= 2 && (args[1] == "-h" || args[1] == "--help") {
-        eprintln!("rtragent --server <addr> [-t token] [-n name] [-i id] [--flash-time <ts>]");
+    if args.len() >= 2 && (args[1] == "-h" || args[1] == "--help" || args[1] == "-v" || args[1] == "--version") {
+        eprintln!("rtragent v{}", env!("CARGO_PKG_VERSION"));
         return;
     }
 
