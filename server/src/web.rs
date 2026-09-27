@@ -96,7 +96,7 @@ pub async fn run(
         .route("/api/web/select", post(api_web_select))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = crate::agent_manager::bind_listener(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }

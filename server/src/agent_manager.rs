@@ -518,6 +518,25 @@ async fn xor_write(socket: &mut TcpStream, data: &[u8], cipher: Option<&XorCiphe
     Ok(())
 }
 
+pub async fn bind_listener(addr: &str) -> anyhow::Result<TcpListener> {
+    #[cfg(not(windows))]
+    {
+        use socket2::{Domain, Socket, Type};
+        let sa: SocketAddr = addr.parse()?;
+        let sock = Socket::new(Domain::for_address(sa), Type::STREAM, None)?;
+        sock.set_reuse_address(true)?;
+        sock.bind(&sa.into())?;
+        sock.listen(1024)?;
+        let std_listener: std::net::TcpListener = sock.into();
+        std_listener.set_nonblocking(true)?;
+        return Ok(TcpListener::from_std(std_listener)?);
+    }
+    #[cfg(windows)]
+    {
+        Ok(TcpListener::bind(addr).await?)
+    }
+}
+
 pub async fn run_agent_listener(
     manager: Arc<AgentManager>,
     addr: &str,
@@ -525,7 +544,7 @@ pub async fn run_agent_listener(
     block_tokens: Vec<String>,
     crypto_key: String,
 ) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(addr).await?;
+    let listener = bind_listener(addr).await?;
     println!("[server] agent listener ready on {}", addr);
 
     // Background task: clean up expired bans every 60 seconds
@@ -883,7 +902,7 @@ pub async fn start_port_forward(
     local_addr: String,
     server_port: u16,
 ) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(("0.0.0.0", server_port)).await?;
+    let listener = bind_listener(&format!("0.0.0.0:{}", server_port)).await?;
     let forward_id = format!("fwd-{}-{}", agent_id, server_port);
     println!(
         "[server] port forward {}: 0.0.0.0:{} -> agent[{}]:{}",
@@ -1014,7 +1033,7 @@ pub async fn start_http_proxy(
     domain: &str,
 ) -> anyhow::Result<()> {
     let addr = format!("0.0.0.0:{}", http_proxy_port);
-    let listener = TcpListener::bind(&addr).await?;
+    let listener = bind_listener(&addr).await?;
     println!(
         "[server] HTTP proxy listening on {} (domain: {})",
         addr,

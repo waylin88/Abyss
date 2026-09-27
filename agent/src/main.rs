@@ -155,6 +155,35 @@ fn hide_args(argv0: &str) {
 #[cfg(not(target_os = "linux"))]
 fn hide_args(_argv0: &str) {}
 
+#[cfg(target_os = "linux")]
+fn set_tcp_keepalive(stream: &std::net::TcpStream) {
+    use std::os::unix::io::AsRawFd;
+    #[link(name = "c")]
+    extern "C" {
+        fn setsockopt(fd: i32, level: i32, optname: i32, optval: *const u8, optlen: i32) -> i32;
+    }
+    const SOL_SOCKET: i32 = 1;
+    const SO_KEEPALIVE: i32 = 9;
+    const IPPROTO_TCP: i32 = 6;
+    const TCP_KEEPIDLE: i32 = 4;
+    const TCP_KEEPINTVL: i32 = 5;
+    const TCP_KEEPCNT: i32 = 6;
+    let fd = stream.as_raw_fd();
+    let one: i32 = 1;
+    unsafe {
+        setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one as *const _ as *const u8, 4);
+        let idle: i32 = 30;
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle as *const _ as *const u8, 4);
+        let intv: i32 = 15;
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intv as *const _ as *const u8, 4);
+        let cnt: i32 = 3;
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt as *const _ as *const u8, 4);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_tcp_keepalive(_stream: &std::net::TcpStream) {}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let argv0 = args.first().cloned().unwrap_or_default();
@@ -222,9 +251,11 @@ fn main() {
         cipher.reset();
         let server_addr = dns::resolve_server_addr(&server, &mut resolver);
         eprintln!("[rtragent] connecting to server as {}", name);
-        match TcpStream::connect(&server_addr) {
+        match TcpStream::connect_timeout(&server_addr, Duration::from_secs(10)) {
             Ok(stream) => {
                 let _ = stream.set_nodelay(true);
+                #[cfg(not(windows))]
+                set_tcp_keepalive(&stream);
 
                 let mut s = stream;
                 let hello = if id.is_empty() {
@@ -232,7 +263,6 @@ fn main() {
                 } else {
                     format!("HELLO {} {} {}\n", name, id, token)
                 };
-                // Encrypt the HELLO message
                 let mut hello_bytes = hello.into_bytes();
                 cipher.encrypt(&mut hello_bytes);
                 if s.write_all(&hello_bytes).is_err() {
@@ -272,14 +302,44 @@ fn run_session(
     let mut tmp = [0u8; BUF_SIZE];
     let mut last_ping = std::time::Instant::now();
 
+    let (tx_pending, rx_pending) = std::sync::mpsc::channel::<(String, Result<TcpStream, String>)>();
+
     loop {
+        while let Ok((tid, result)) = rx_pending.try_recv() {
+            match result {
+                Ok(local) => {
+                    let _ = local.set_nodelay(true);
+                    let _ = local.set_read_timeout(Some(Duration::from_millis(TICK_MS)));
+                    eprintln!("[rtragent] tunnel {} opened", tid);
+                    tunnels.lock().unwrap().insert(
+                        tid.clone(),
+                        TunnelState { local_stream: local },
+                    );
+                    xor_write(
+                        stream,
+                        format!("TUN_OK {}\n", tid).as_bytes(),
+                        cipher,
+                    );
+                    let _ = stream.flush();
+                }
+                Err(_) => {
+                    eprintln!("[rtragent] tunnel {} connect failed", tid);
+                    xor_write(
+                        stream,
+                        format!("TUN_CLOSE {}\n", tid).as_bytes(),
+                        cipher,
+                    );
+                    let _ = stream.flush();
+                }
+            }
+        }
+
         match stream.read(&mut tmp) {
             Ok(0) => {
                 eprintln!("[rtragent] server disconnected");
                 return Ok(());
             }
             Ok(n) => {
-                // Decrypt the chunk before appending to buffer
                 cipher.decrypt(&mut tmp[..n]);
                 buf.extend_from_slice(&tmp[..n]);
             }
@@ -335,40 +395,15 @@ fn run_session(
                             if parts.len() >= 3 {
                                 let tunnel_id = parts[1].to_string();
                                 let local_addr = parts[2].to_string();
-
-                                match TcpStream::connect(&local_addr) {
-                                    Ok(local) => {
-                                        let _ = local.set_nodelay(true);
-                                        let _ = local
-                                            .set_read_timeout(Some(Duration::from_millis(TICK_MS)));
-                                        eprintln!(
-                                            "[rtragent] tunnel {} opened",
-                                            tunnel_id
-                                        );
-                                        tunnels.lock().unwrap().insert(
-                                            tunnel_id.clone(),
-                                            TunnelState { local_stream: local },
-                                        );
-                                        xor_write(
-                                            stream,
-                                            format!("TUN_OK {}\n", tunnel_id).as_bytes(),
-                                            cipher,
-                                        );
-                                        let _ = stream.flush();
-                                    }
-                                    Err(_) => {
-                                        eprintln!(
-                                            "[rtragent] tunnel {} connect failed",
-                                            tunnel_id
-                                        );
-                                        xor_write(
-                                            stream,
-                                            format!("TUN_CLOSE {}\n", tunnel_id).as_bytes(),
-                                            cipher,
-                                        );
-                                        let _ = stream.flush();
-                                    }
-                                }
+                                let tx = tx_pending.clone();
+                                thread::spawn(move || {
+                                    let result = TcpStream::connect_timeout(
+                                        &local_addr,
+                                        Duration::from_secs(5),
+                                    )
+                                    .map_err(|e| e.to_string());
+                                    let _ = tx.send((tunnel_id, result));
+                                });
                             }
                         }
                         Some("TUN_DATA") => {
