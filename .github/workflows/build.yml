@@ -34,19 +34,15 @@ jobs:
           if [ -z "$TARGETS" ]; then
             RESULT="$ALL"
           else
-            RESULT=$(python3 - "$ALL" "$TARGETS" << 'PYEOF'
-          import sys, json
-          all_items = json.loads(sys.argv[1])
-          wanted = set(t.strip() for t in sys.argv[2].split(',') if t.strip())
-          filtered = [item for item in all_items if item['job_name'] in wanted]
-          print(json.dumps(filtered))
-          PYEOF
-          )
+            RESULT=$(echo "$ALL" | jq -c --arg targets "$TARGETS" '
+              ($targets | split(",") | map(gsub("^ *| *$"; ""))) as $wanted
+              | [.[] | select(.job_name as $n | $wanted | index($n))]
+            ')
           fi
 
           echo "matrix=$RESULT" >> "$GITHUB_OUTPUT"
           echo "Filtered matrix:"
-          echo "$RESULT" | python3 -m json.tool
+          echo "$RESULT" | jq .
 
   build:
     needs: generate-matrix
