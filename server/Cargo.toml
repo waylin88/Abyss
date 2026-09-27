@@ -1,10 +1,10 @@
 [package]
-name = "rtrserver"
+name = "abyss-server"
 edition.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "rtrserver"
+name = "abyss-server"
 path = "src/main.rs"
 
 [dependencies]

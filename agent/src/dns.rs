@@ -174,10 +174,10 @@ pub fn resolve_server_addr(
     // Try custom DNS resolution
     if let Some(_ip) = resolver.resolve(host) {
         let result = format!("{}:{}", _ip, port);
-        eprintln!("[rtragent] custom DNS resolved");
+        eprintln!("[abyssd] custom DNS resolved");
         return result;
     }
-    eprintln!("[rtragent] custom DNS failed, falling back to system DNS");
+    eprintln!("[abyssd] custom DNS failed, falling back to system DNS");
 
     // Fallback: use the original hostname (system DNS)
     server.to_string()

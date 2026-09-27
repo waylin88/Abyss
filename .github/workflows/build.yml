@@ -14,44 +14,44 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - job_name: rtrserver-x86_64
-            binary: rtrserver
+          - job_name: abyss-server-x86_64
+            binary: abyss-server
             target: x86_64-unknown-linux-musl
             builder: cargo
-          - job_name: rtrserver-aarch64
-            binary: rtrserver
+          - job_name: abyss-server-aarch64
+            binary: abyss-server
             target: aarch64-unknown-linux-gnu
             builder: cross
 
           # --- musl targets (参考 vnt-dev/vnt 方案) ---
-          - job_name: rtragent-mips
-            binary: rtragent
+          - job_name: abyss-mips
+            binary: abyss
             target: mips-unknown-linux-musl
             builder: musl
             musl_uri: mips-linux-muslsf-cross
             musl_url: mips-linux-muslsf
             use_nightly: true
-          - job_name: rtragent-mipsel
-            binary: rtragent
+          - job_name: abyss-mipsel
+            binary: abyss
             target: mipsel-unknown-linux-musl
             builder: musl
             musl_uri: mipsel-linux-muslsf-cross
             musl_url: mipsel-linux-muslsf
             use_nightly: true
-          - job_name: rtragent-armv7
-            binary: rtragent
+          - job_name: abyss-armv7
+            binary: abyss
             target: armv7-unknown-linux-musleabihf
             builder: musl
             musl_uri: armv7l-linux-musleabihf-cross
             musl_url: armv7l-linux-musleabihf
             use_nightly: false
 
-          - job_name: rtragent-x86_64
-            binary: rtragent
+          - job_name: abyss-x86_64
+            binary: abyss
             target: x86_64-unknown-linux-musl
             builder: cargo
-          - job_name: rtragent-aarch64
-            binary: rtragent
+          - job_name: abyss-aarch64
+            binary: abyss
             target: aarch64-unknown-linux-gnu
             builder: cross
 

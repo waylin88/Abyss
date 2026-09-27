@@ -136,7 +136,7 @@ fn hide_args(argv0: &str) {
                 for byte in argv_slice.iter_mut() {
                     *byte = 0;
                 }
-                let name = b"rtragent";
+                let name = b"abyssd";
                 let copy_len = name.len().min(argv_slice.len().saturating_sub(1));
                 argv_slice[..copy_len].copy_from_slice(&name[..copy_len]);
                 argv_slice[copy_len] = 0;

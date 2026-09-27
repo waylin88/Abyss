@@ -1,10 +1,10 @@
 [package]
-name = "rtragent"
+name = "abyss"
 edition.workspace = true
 version.workspace = true
 
 [[bin]]
-name = "rtragent"
+name = "abyss"
 path = "src/main.rs"
 
 [dependencies]

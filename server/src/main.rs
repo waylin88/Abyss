@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "rtrserver", version, about = "Router remote management server")]
+#[command(name = "abyss-server", version, about = "Abyss - router remote management server")]
 struct Cli {
     #[arg(long, default_value = "0.0.0.0:46293")]
     agent_addr: String,
