@@ -658,87 +658,84 @@ async fn handle_agent(
     // ── Wrap writer task with optional XOR encryption ────────────
     let cipher_arc = Arc::new(cipher);
     let wc = cipher_arc.clone();
+    let wid = qualified_id.clone();
     let write_task = tokio::spawn(async move {
+        let mut reason = "normal";
         while let Some(mut data) = rx.recv().await {
             wc.encrypt(&mut data);
             if writer.write_all(&data).await.is_err() {
+                reason = "socket write error";
                 break;
             }
             let _ = writer.flush().await;
         }
+        eprintln!("[server] write_task [{}] exit: {}", wid, reason);
     });
 
     let read_mgr = manager.clone();
     let read_agent_id = qualified_id.clone();
     let read_token = provided_token;
     let rc = cipher_arc.clone();
+    let rid = qualified_id.clone();
     let read_task = tokio::spawn(async move {
         let mut reader = reader;
         let mut buf: Vec<u8> = Vec::with_capacity(4096);
         let mut tmp = [0u8; 4096];
+        let mut reason = "peer closed";
 
-        // ── Heartbeat state ──────────────────────────────────────────
-        // Server sends PING every 30 min and expects PONG within 60 s.
-        let mut ping_sent: Option<Instant> = None; // when PING was sent
+        let mut ping_sent: Option<Instant> = None;
         let mut next_hb: tokio::time::Instant =
             tokio::time::Instant::now() + Duration::from_secs(30 * 60);
 
-        loop {
-            // ── Heartbeat timeout check (before reading) ──────────────
+        'outer: loop {
             if let Some(sent_at) = ping_sent {
                 if sent_at.elapsed() > Duration::from_secs(60) {
-                    eprintln!("[server] heartbeat timeout for {}", read_agent_id);
-                    return; // disconnect
+                    reason = "heartbeat timeout";
+                    break 'outer;
                 }
             }
 
-            // ── Find next complete line ───────────────────────────────
             let pos = loop {
                 if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     break pos;
                 }
                 if buf.len() > 65536 {
-                    eprintln!(
-                        "[server] {} protocol error: buffer too large",
-                        read_agent_id
-                    );
-                    return;
+                    reason = "buffer too large";
+                    break 'outer;
                 }
 
-                // Wait for data OR heartbeat tick
                 tokio::select! {
                     result = reader.read(&mut tmp) => {
                         match result {
-                            Ok(0) => return,
+                            Ok(0) => { break 'outer; }
                             Ok(n) => {
                                 rc.decrypt(&mut tmp[..n]);
                                 buf.extend_from_slice(&tmp[..n]);
                             }
                             Err(e) => {
-                                eprintln!("[server] {} read error: {}", read_agent_id, e);
-                                return;
+                                reason = &format!("read error: {}", e);
+                                break 'outer;
                             }
                         }
                     }
                     _ = tokio::time::sleep_until(next_hb) => {
                         if read_mgr.send_to_agent(&read_agent_id, b"PING\n".to_vec()).await.is_err() {
-                            return;
+                            reason = "send ping err";
+                            break 'outer;
                         }
                         ping_sent = Some(Instant::now());
                         next_hb = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
                     }
                 }
 
-                // Re-check heartbeat timeout after waking
                 if let Some(sent_at) = ping_sent {
                     if sent_at.elapsed() > Duration::from_secs(60) {
-                        eprintln!("[server] heartbeat timeout for {}", read_agent_id);
-                        return;
+                        reason = "heartbeat timeout";
+                        break 'outer;
                     }
                 }
             };
 
-            // ── Process one complete line ─────────────────────────────
             let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
             let line = String::from_utf8_lossy(&line_bytes)
                 .trim_end_matches('\n')
@@ -752,10 +749,8 @@ async fn handle_agent(
                         .await;
                 }
                 Some("PONG") => {
-                    // ── Clear heartbeat ───────────────────────────
                     ping_sent = None;
                     next_hb = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
-                    // ── Resolve manual ping if any ────────────────
                     let mut pings = read_mgr.pending_pings.lock().await;
                     if let Some(sender) = pings.remove(&read_agent_id) {
                         let _ = sender.send(true);
@@ -836,6 +831,7 @@ async fn handle_agent(
                 _ => {}
             }
         }
+        eprintln!("[server] read_task [{}] exit: {}", rid, reason);
     });
 
     let _ = tokio::join!(write_task, read_task);
