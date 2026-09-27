@@ -282,6 +282,11 @@ function getHeaders() {
 
 // ---------- Search ----------
 
+function stripId(fullId) {
+  const idx = fullId.indexOf(':');
+  return idx >= 0 ? fullId.substring(idx + 1) : fullId;
+}
+
 let searchTimer = null;
 function onSearch() {
   clearTimeout(searchTimer);
@@ -349,7 +354,7 @@ async function refreshAgents() {
         <span class="agent-item-left">
           <span class="${dotClass}"></span>
           <span class="agent-name">${a.name}</span>
-          <span class="agent-id-label">${a.id}</span>
+          <span class="agent-id-label">${stripId(a.id)}</span>
         </span>
         ${pingHtml}
       </div>`;
@@ -393,7 +398,7 @@ function selectAgent(id) {
   currentAgent = id;
   currentAgentName = agent.name;
   currentAgentData = agent;
-  document.getElementById('current-agent').textContent = agent.name + ' (' + id + ')';
+  document.getElementById('current-agent').textContent = agent.name + ' (' + stripId(id) + ')';
   // Reset web toggle when switching agents
   document.getElementById('web-toggle').checked = false;
   renderDetail(agent);
@@ -467,7 +472,7 @@ function renderDetail(agent) {
   const rows = [
     // Row 1
     `<div class="dhoriz-item"><span class="dlabel">名称</span><span class="dvalue">${agent.name}</span></div>
-     <div class="dhoriz-item"><span class="dlabel">ID</span><span class="dvalue">${agent.id}</span></div>
+     <div class="dhoriz-item"><span class="dlabel">ID</span><span class="dvalue">${stripId(agent.id)}</span></div>
      <div class="dhoriz-item"><span class="dlabel">状态</span>${statusHtml}</div>`,
     // Row 2
     `<div class="dhoriz-item" style="border-right:none"><span class="dlabel">IP</span><span class="dvalue">${ipDisplay}</span></div>`,
@@ -565,7 +570,7 @@ async function refreshForwards() {
       <div class="fwd-item">
         <div class="left">
           <strong>0.0.0.0:${f.server_port}</strong> → ${f.agent_name} (${f.local_addr})
-          <div class="fwd-meta">${f.agent_id} · ${f.id}</div>
+          <div class="fwd-meta">${stripId(f.agent_id)} · ${f.id}</div>
         </div>
         <div class="right">
           <button class="danger" onclick="stopForward('${f.id}')">关闭</button>
