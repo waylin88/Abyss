@@ -22,6 +22,11 @@ impl XorCipher {
         !self.key.is_empty()
     }
 
+    pub fn reset(&self) {
+        self.read_pos.store(0, Ordering::Relaxed);
+        self.write_pos.store(0, Ordering::Relaxed);
+    }
+
     /// XOR 加密 data（使用写位置计数器）。
     pub fn encrypt(&self, data: &mut [u8]) {
         if self.key.is_empty() {

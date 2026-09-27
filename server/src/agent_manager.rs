@@ -1147,9 +1147,38 @@ async fn handle_http_proxy(
     // ── Forward the already-read initial data (HTTP headers + any body) ──
     let initial_data = &buf[..];
     if !initial_data.is_empty() {
-        let frame = format!("TUN_DATA {} {}\n", tunnel_id, initial_data.len());
+        let mut fixed: Vec<u8> = initial_data.to_vec();
+        let he = header_end;
+
+        // Find Host: line in headers (case-insensitive) and replace value
+        let mut hs: Option<usize> = None;
+        let mut he_byte: Option<usize> = None;
+        let mut i = 0;
+        while i + 6 <= he {
+            let lower_prefix = &fixed[i..i + 5].to_ascii_lowercase();
+            if lower_prefix == b"host:" {
+                let mut j = i + 5;
+                while j < he && fixed[j] != b'\r' && fixed[j] != b'\n' {
+                    j += 1;
+                }
+                hs = Some(i);
+                he_byte = Some(j);
+                break;
+            }
+            while i < he && fixed[i] != b'\n' {
+                i += 1;
+            }
+            i += 1;
+        }
+        if let (Some(h_start), Some(h_end)) = (hs, he_byte) {
+            let new_host = b"Host: 127.0.0.1";
+            let old_len = h_end - h_start;
+            fixed.splice(h_start..h_end, new_host.iter().copied());
+        }
+
+        let frame = format!("TUN_DATA {} {}\n", tunnel_id, fixed.len());
         let mut msg = frame.into_bytes();
-        msg.extend_from_slice(initial_data);
+        msg.extend_from_slice(&fixed);
         if mgr.send_to_agent(&found_qualified, msg).await.is_err() {
             mgr.tunnels.lock().await.remove(&tunnel_id);
             anyhow::bail!("agent disconnected");

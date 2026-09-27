@@ -219,6 +219,7 @@ fn main() {
     }
 
     loop {
+        cipher.reset();
         let server_addr = dns::resolve_server_addr(&server, &mut resolver);
         eprintln!("[rtragent] connecting to server as {}", name);
         match TcpStream::connect(&server_addr) {
