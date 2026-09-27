@@ -184,6 +184,51 @@ fn set_tcp_keepalive(stream: &std::net::TcpStream) {
 #[cfg(not(target_os = "linux"))]
 fn set_tcp_keepalive(_stream: &std::net::TcpStream) {}
 
+#[cfg(target_arch = "mipsel")]
+fn auto_name() -> String {
+    Command::new("nvram")
+        .args(["get", "productid"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "router".to_string())
+}
+
+#[cfg(not(target_arch = "mipsel"))]
+fn auto_name() -> String {
+    "router".to_string()
+}
+
+#[cfg(target_arch = "mipsel")]
+fn auto_id() -> String {
+    let output = Command::new("lan_eeprom_mac").output().ok();
+    if let Some(o) = output {
+        if let Ok(text) = String::from_utf8(o.stdout) {
+            if let Some(mac) = text.lines().find_map(|line| {
+                let idx = line.rfind(':')?;
+                let mac = line[idx + 1..].trim();
+                if !mac.is_empty() && mac.contains(':') {
+                    Some(mac.to_lowercase().replace(':', ""))
+                } else {
+                    None
+                }
+            }) {
+                if !mac.is_empty() {
+                    return mac;
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+#[cfg(not(target_arch = "mipsel"))]
+fn auto_id() -> String {
+    String::new()
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let argv0 = args.first().cloned().unwrap_or_default();
@@ -221,10 +266,10 @@ fn main() {
         .unwrap_or_default();
     let name = parse_arg(&args, "--name")
         .or_else(|| parse_arg(&args, "-n"))
-        .unwrap_or_else(|| "router".to_string());
+        .unwrap_or_else(auto_name);
     let id = parse_arg(&args, "--id")
         .or_else(|| parse_arg(&args, "-i"))
-        .unwrap_or_default();
+        .unwrap_or_else(auto_id);
     let crypto_key = if has_flag(&args, "--crypto-key-no") {
         String::new()
     } else {
