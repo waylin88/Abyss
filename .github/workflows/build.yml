@@ -20,25 +20,12 @@ jobs:
     steps:
       - id: filter
         run: |
-          ALL='[
-            {"job_name":"abyss-server-x86_64","binary":"abyss-server","target":"x86_64-unknown-linux-musl","builder":"cargo"},
-            {"job_name":"abyss-server-aarch64","binary":"abyss-server","target":"aarch64-unknown-linux-gnu","builder":"cross"},
-            {"job_name":"abyss-mips","binary":"abyss","target":"mips-unknown-linux-musl","builder":"musl","musl_uri":"mips-linux-muslsf-cross","musl_url":"mips-linux-muslsf","use_nightly":true},
-            {"job_name":"abyss-mipsel","binary":"abyss","target":"mipsel-unknown-linux-musl","builder":"musl","musl_uri":"mipsel-linux-muslsf-cross","musl_url":"mipsel-linux-muslsf","use_nightly":true},
-            {"job_name":"abyss-armv7","binary":"abyss","target":"armv7-unknown-linux-musleabihf","builder":"musl","musl_uri":"armv7l-linux-musleabihf-cross","musl_url":"armv7l-linux-musleabihf","use_nightly":false},
-            {"job_name":"abyss-x86_64","binary":"abyss","target":"x86_64-unknown-linux-musl","builder":"cargo"},
-            {"job_name":"abyss-aarch64","binary":"abyss","target":"aarch64-unknown-linux-gnu","builder":"cross"}
-          ]'
-
-          TARGETS="${{ inputs.targets }}"
-          if [ -z "$TARGETS" ]; then
-            RESULT="$ALL"
-          else
-            RESULT=$(echo "$ALL" | jq -c --arg targets "$TARGETS" '
-              ($targets | split(",") | map(gsub("^ *| *$"; ""))) as $wanted
-              | [.[] | select(.job_name as $n | $wanted | index($n))]
-            ')
-          fi
+          RESULT=$(echo '[{"job_name":"abyss-server-x86_64","binary":"abyss-server","target":"x86_64-unknown-linux-musl","builder":"cargo"},{"job_name":"abyss-server-aarch64","binary":"abyss-server","target":"aarch64-unknown-linux-gnu","builder":"cross"},{"job_name":"abyss-mips","binary":"abyss","target":"mips-unknown-linux-musl","builder":"musl","musl_uri":"mips-linux-muslsf-cross","musl_url":"mips-linux-muslsf","use_nightly":true},{"job_name":"abyss-mipsel","binary":"abyss","target":"mipsel-unknown-linux-musl","builder":"musl","musl_uri":"mipsel-linux-muslsf-cross","musl_url":"mipsel-linux-muslsf","use_nightly":true},{"job_name":"abyss-armv7","binary":"abyss","target":"armv7-unknown-linux-musleabihf","builder":"musl","musl_uri":"armv7l-linux-musleabihf-cross","musl_url":"armv7l-linux-musleabihf","use_nightly":false},{"job_name":"abyss-x86_64","binary":"abyss","target":"x86_64-unknown-linux-musl","builder":"cargo"},{"job_name":"abyss-aarch64","binary":"abyss","target":"aarch64-unknown-linux-gnu","builder":"cross"}]' | jq -c --arg targets "${{ inputs.targets }}" '
+            ($targets | split(",") | map(gsub("^ *| *$"; "")) | map(select(. != ""))) as $wanted
+            | if ($wanted | length == 0) then .
+              else [.[] | select(.job_name as $n | $wanted | index($n))]
+              end
+          ')
 
           echo "matrix=$RESULT" >> "$GITHUB_OUTPUT"
           echo "Filtered matrix:"
