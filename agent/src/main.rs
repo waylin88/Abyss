@@ -186,6 +186,7 @@ fn set_tcp_keepalive(_stream: &std::net::TcpStream) {}
 
 #[cfg(target_os = "linux")]
 fn auto_name() -> String {
+    eprintln!("[rtragent] auto_name() called (linux build)");
     if let Ok(o) = Command::new("nvram").args(["get", "productid"]).output() {
         let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
         eprintln!("[rtragent] nvram productid exit={}: {:?}", o.status, out);
@@ -199,11 +200,13 @@ fn auto_name() -> String {
 
 #[cfg(not(target_os = "linux"))]
 fn auto_name() -> String {
+    eprintln!("[rtragent] auto_name() called (non-linux build, fallback router)");
     "router".to_string()
 }
 
 #[cfg(target_os = "linux")]
 fn auto_id() -> String {
+    eprintln!("[rtragent] auto_id() called (linux build)");
     let mut raw = String::new();
     if let Ok(o) = Command::new("lan_eeprom_mac").output() {
         raw.push_str(&String::from_utf8_lossy(&o.stdout));
@@ -230,6 +233,7 @@ fn auto_id() -> String {
 
 #[cfg(not(target_os = "linux"))]
 fn auto_id() -> String {
+    eprintln!("[rtragent] auto_id() called (non-linux build, fallback empty)");
     String::new()
 }
 
