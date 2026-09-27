@@ -184,29 +184,25 @@ fn set_tcp_keepalive(stream: &std::net::TcpStream) {
 #[cfg(not(target_os = "linux"))]
 fn set_tcp_keepalive(_stream: &std::net::TcpStream) {}
 
-#[cfg(target_arch = "mipsel")]
+#[cfg(target_os = "linux")]
 fn auto_name() -> String {
-    let mut result = String::new();
     if let Ok(o) = Command::new("nvram").args(["get", "productid"]).output() {
         let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
         eprintln!("[rtragent] nvram productid exit={}: {:?}", o.status, out);
         if !out.is_empty() {
-            result = out;
+            return out;
         }
     }
-    if result.is_empty() {
-        eprintln!("[rtragent] auto_name fallback: router");
-        result = "router".to_string();
-    }
-    result
+    eprintln!("[rtragent] auto_name fallback: router");
+    "router".to_string()
 }
 
-#[cfg(not(target_arch = "mipsel"))]
+#[cfg(not(target_os = "linux"))]
 fn auto_name() -> String {
     "router".to_string()
 }
 
-#[cfg(target_arch = "mipsel")]
+#[cfg(target_os = "linux")]
 fn auto_id() -> String {
     let mut raw = String::new();
     if let Ok(o) = Command::new("lan_eeprom_mac").output() {
@@ -232,7 +228,7 @@ fn auto_id() -> String {
     String::new()
 }
 
-#[cfg(not(target_arch = "mipsel"))]
+#[cfg(not(target_os = "linux"))]
 fn auto_id() -> String {
     String::new()
 }
