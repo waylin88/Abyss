@@ -172,12 +172,12 @@ pub fn resolve_server_addr(
     }
 
     // Try custom DNS resolution
-    if let Some(ip) = resolver.resolve(host) {
-        let result = format!("{}:{}", ip, port);
-        eprintln!("[rtragent] DNS resolved {} -> {} (via {})", host, result, resolver.dns_server);
+    if let Some(_ip) = resolver.resolve(host) {
+        let result = format!("{}:{}", _ip, port);
+        eprintln!("[rtragent] custom DNS resolved");
         return result;
     }
-    eprintln!("[rtragent] DNS resolution failed for {}, fallback to system DNS", host);
+    eprintln!("[rtragent] custom DNS failed, falling back to system DNS");
 
     // Fallback: use the original hostname (system DNS)
     server.to_string()

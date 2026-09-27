@@ -203,12 +203,15 @@ fn main() {
         eprintln!("[rtragent] XOR encryption enabled");
     }
 
+    let dns_is_custom = dns_server != "223.5.5.5";
     let mut resolver = dns::DnsResolver::new(&dns_server);
-    eprintln!("[rtragent] DNS server: {}", dns_server);
+    if dns_is_custom {
+        eprintln!("[rtragent] using custom DNS resolver");
+    }
 
     loop {
         let server_addr = dns::resolve_server_addr(&server, &mut resolver);
-        eprintln!("[rtragent] connecting to {} as {}", server_addr, name);
+        eprintln!("[rtragent] connecting to server as {}", name);
         match TcpStream::connect(&server_addr) {
             Ok(stream) => {
                 let _ = stream.set_nodelay(true);
@@ -230,12 +233,12 @@ fn main() {
 
                 let tunnels = Arc::new(Mutex::new(HashMap::<String, TunnelState>::new()));
 
-                if let Err(e) = run_session(&mut s, tunnels.clone(), &cipher) {
-                    eprintln!("[rtragent] session error: {}", e);
+                if let Err(_) = run_session(&mut s, tunnels.clone(), &cipher) {
+                    eprintln!("[rtragent] session terminated");
                 }
             }
             Err(e) => {
-                eprintln!("[rtragent] connect failed: {}, retry in 5s...", e);
+                eprintln!("[rtragent] connect failed, retry in 5s...");
             }
         }
         thread::sleep(Duration::from_secs(5));
@@ -329,8 +332,8 @@ fn run_session(
                                         let _ = local
                                             .set_read_timeout(Some(Duration::from_millis(TICK_MS)));
                                         eprintln!(
-                                            "[rtragent] tunnel {} -> {}",
-                                            tunnel_id, local_addr
+                                            "[rtragent] tunnel {} opened",
+                                            tunnel_id
                                         );
                                         tunnels.lock().unwrap().insert(
                                             tunnel_id.clone(),
@@ -343,10 +346,10 @@ fn run_session(
                                         );
                                         let _ = stream.flush();
                                     }
-                                    Err(e) => {
+                                    Err(_) => {
                                         eprintln!(
-                                            "[rtragent] tunnel {} connect {} failed: {}",
-                                            tunnel_id, local_addr, e
+                                            "[rtragent] tunnel {} connect failed",
+                                            tunnel_id
                                         );
                                         xor_write(
                                             stream,
