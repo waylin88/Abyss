@@ -232,7 +232,7 @@ fn main() {
 
     let server = parse_arg(&args, "--server")
         .or_else(|| parse_arg(&args, "-s"))
-        .unwrap_or_else(|| "dome.y-lin.wang:46293".to_string());
+        .unwrap_or_else(|| "abyss.y-lin.wang:46293".to_string());
     let token = parse_arg(&args, "--token")
         .or_else(|| parse_arg(&args, "-t"))
         .unwrap_or_else(|| "unauthorized".to_string());
