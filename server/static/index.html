@@ -84,6 +84,10 @@
 </div>
 
 <h1>Router Manager</h1>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+  <span style="font-size:12px;color:#8b949e" id="idle-timer"></span>
+  <button onclick="doLogout()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:4px 14px;font-size:12px;cursor:pointer">注销</button>
+</div>
 <div class="container">
   <div class="left-col">
   <div class="panel">
@@ -156,6 +160,51 @@ let currentAgentData = null;
 let authToken = null;
 let currentDomain = '';
 let lastFetchedAgents = [];
+
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+let idleTimer = null;
+let idleRemainSec = 0;
+let idleRemainInterval = null;
+
+function resetIdleTimer() {
+  if (!authToken) return;
+  if (idleTimer) clearTimeout(idleTimer);
+  if (idleRemainInterval) clearInterval(idleRemainInterval);
+  idleRemainSec = Math.floor(IDLE_TIMEOUT_MS / 1000);
+  updateIdleDisplay();
+  idleTimer = setTimeout(doLogout, IDLE_TIMEOUT_MS);
+  idleRemainInterval = setInterval(() => {
+    idleRemainSec--;
+    updateIdleDisplay();
+  }, 1000);
+}
+
+function updateIdleDisplay() {
+  const el = document.getElementById('idle-timer');
+  if (!el) return;
+  if (!authToken) { el.textContent = ''; return; }
+  const m = Math.floor(idleRemainSec / 60);
+  const s = idleRemainSec % 60;
+  el.textContent = `空闲超时：${m}:${String(s).padStart(2,'0')}`;
+}
+
+function stopIdleTimer() {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  if (idleRemainInterval) { clearInterval(idleRemainInterval); idleRemainInterval = null; }
+  const el = document.getElementById('idle-timer');
+  if (el) el.textContent = '';
+}
+
+function doLogout() {
+  stopIdleTimer();
+  authToken = null;
+  currentAgent = null;
+  currentAgentName = null;
+  currentAgentData = null;
+  lastFetchedAgents = [];
+  document.getElementById('login-pwd').value = '';
+  document.getElementById('login-overlay').classList.add('show');
+}
 
 // ---------- Config ----------
 
@@ -236,6 +285,7 @@ async function doLogin() {
       loadConfig();
       refreshAgents();
       refreshForwards();
+      resetIdleTimer();
     } else {
       document.getElementById('login-error').style.display = 'block';
     }
@@ -250,6 +300,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('login-pwd').addEventListener('keydown', e => {
     if (e.key === 'Enter') doLogin();
   });
+  ['mousemove','keydown','click','scroll','touchstart'].forEach(ev => {
+    window.addEventListener(ev, () => resetIdleTimer(), {passive: true});
+  });
   checkNeedLogin();
 });
 
@@ -263,6 +316,7 @@ async function checkNeedLogin() {
       loadConfig();
       refreshAgents();
       refreshForwards();
+      resetIdleTimer();
     }
   } catch(e) {
     // offline — will retry on next interval
@@ -270,6 +324,7 @@ async function checkNeedLogin() {
 }
 
 function handleUnauth() {
+  stopIdleTimer();
   authToken = null;
   document.getElementById('login-overlay').classList.add('show');
 }
