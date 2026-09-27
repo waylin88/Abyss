@@ -65,6 +65,7 @@ static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
 pub struct TunnelHandle {
     pub agent_id: String,
     pub client: Option<tokio::net::tcp::OwnedWriteHalf>,
+    pub ready_tx: Option<oneshot::Sender<bool>>,
 }
 
 #[derive(Clone)]
@@ -820,6 +821,15 @@ async fn handle_agent(
                 }
                 Some("TUN_OK") => {
                     println!("[server] {}", line);
+                    if parts.len() >= 2 {
+                        let tid = parts[1].to_string();
+                        let mut tunnels = read_mgr.tunnels.lock().await;
+                        if let Some(tun) = tunnels.get_mut(&tid) {
+                            if let Some(tx) = tun.ready_tx.take() {
+                                let _ = tx.send(true);
+                            }
+                        }
+                    }
                 }
                 Some("TUN_DATA") => {
                     if parts.len() >= 3 {
@@ -854,6 +864,11 @@ async fn handle_agent(
                         let tunnel_id = parts[1].to_string();
                         println!("[server] tunnel {} closed by agent", tunnel_id);
                         let mut tunnels = read_mgr.tunnels.lock().await;
+                        if let Some(tun) = tunnels.get_mut(&tunnel_id) {
+                            if let Some(tx) = tun.ready_tx.take() {
+                                let _ = tx.send(false);
+                            }
+                        }
                         tunnels.remove(&tunnel_id);
                     }
                 }
@@ -944,6 +959,8 @@ pub async fn start_port_forward(
 
                             let (user_reader, user_writer) = client.into_split();
 
+                            let (ready_tx, ready_rx) = oneshot::channel();
+
                             {
                                 let mut tunnels = mgr.tunnels.lock().await;
                                 tunnels.insert(
@@ -951,6 +968,7 @@ pub async fn start_port_forward(
                                     TunnelHandle {
                                         agent_id: aid.clone(),
                                         client: Some(user_writer),
+                                        ready_tx: Some(ready_tx),
                                     },
                                 );
                             }
@@ -966,6 +984,22 @@ pub async fn start_port_forward(
                             let tid = tunnel_id.clone();
                             let aid2 = aid.clone();
                             tokio::spawn(async move {
+                                let tunnel_ready = tokio::select! {
+                                    result = ready_rx => {
+                                        match result {
+                                            Ok(true) => true,
+                                            _ => false,
+                                        }
+                                    }
+                                    _ = tokio::time::sleep(Duration::from_secs(5)) => false,
+                                };
+                                if !tunnel_ready {
+                                    let mut tunnels = mgr2.tunnels.lock().await;
+                                    tunnels.remove(&tid);
+                                    let close_msg = format!("TUN_CLOSE {}\n", tid).into_bytes();
+                                    let _ = mgr2.send_to_agent(&aid2, close_msg).await;
+                                    return;
+                                }
                                 let _ = pipe_user_to_agent(mgr2.clone(), &tid, &aid2, user_reader).await;
                                 let mut tunnels = mgr2.tunnels.lock().await;
                                 tunnels.remove(&tid);
@@ -1148,6 +1182,8 @@ async fn handle_http_proxy(
 
     let (user_reader, user_writer) = client.into_split();
 
+    let (ready_tx, ready_rx) = oneshot::channel();
+
     {
         let mut tunnels = mgr.tunnels.lock().await;
         tunnels.insert(
@@ -1155,6 +1191,7 @@ async fn handle_http_proxy(
             TunnelHandle {
                 agent_id: found_qualified.clone(),
                 client: Some(user_writer),
+                ready_tx: Some(ready_tx),
             },
         );
     }
@@ -1162,6 +1199,27 @@ async fn handle_http_proxy(
     // Send TUN_OPEN to agent
     let open_msg = format!("TUN_OPEN {} {}\n", tunnel_id, local_addr).into_bytes();
     mgr.send_to_agent(&found_qualified, open_msg).await?;
+
+    // Wait for agent to connect to the local service (TUN_OK/TUN_CLOSE)
+    tokio::select! {
+        result = ready_rx => {
+            match result {
+                Ok(true) => {},
+                Ok(false) => {
+                    mgr.tunnels.lock().await.remove(&tunnel_id);
+                    anyhow::bail!("agent closed tunnel for {}", found_qualified);
+                }
+                Err(_) => {
+                    mgr.tunnels.lock().await.remove(&tunnel_id);
+                    anyhow::bail!("agent disconnected before tunnel ready for {}", found_qualified);
+                }
+            }
+        }
+        _ = tokio::time::sleep(Duration::from_secs(5)) => {
+            mgr.tunnels.lock().await.remove(&tunnel_id);
+            anyhow::bail!("agent tunnel timeout for {}", found_qualified);
+        }
+    }
 
     // ── Forward the already-read initial data (HTTP headers + any body) ──
     let initial_data = &buf[..];
