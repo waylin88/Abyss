@@ -55,8 +55,11 @@ pub async fn run(
     addr: &str,
     password: &str,
 ) -> anyhow::Result<()> {
-    // Ensure data directory exists (./data by default)
-    let data_path = PathBuf::from("./data");
+    let data_path = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("data");
     let _ = std::fs::create_dir_all(&data_path);
 
     // Load config from file (no CLI override)

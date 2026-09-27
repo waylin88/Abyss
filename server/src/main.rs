@@ -73,8 +73,11 @@ async fn main() -> anyhow::Result<()> {
             .collect()
     };
 
-    // Ensure data directory exists
-    let data_dir = PathBuf::from("./data");
+    let data_dir = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("data");
     std::fs::create_dir_all(&data_dir)?;
 
     // Load domain from config file for HTTP proxy
