@@ -226,27 +226,7 @@ fn main() {
     hide_args(&argv0);
 
     if args.len() >= 2 && (args[1] == "-h" || args[1] == "--help") {
-        eprintln!("rtragent - lightweight router agent");
-        eprintln!();
-        eprintln!("USAGE: rtragent --server <addr> [--token <token>] [--name <name>] [--id <id>] [--crypto-key <key>] [--crypto-key-no]");
-        eprintln!();
-        eprintln!("OPTIONS:");
-        eprintln!("  -s, --server <addr>       Server address (default: dome.y-lin.wang:46293)");
-        eprintln!("  -t, --token <token>       Auth token (optional)");
-        eprintln!("  -n, --name <name>         Agent display name (default: router)");
-        eprintln!("  -i, --id <id>             Unique device ID. Server uses it to");
-        eprintln!("                             identify this agent across reconnections.");
-        eprintln!("                             If not set, server generates one.");
-        eprintln!("  -k, --crypto-key <key>    XOR encryption key (must match server).");
-        eprintln!("                             Default: Zzb33cANnGVGdQWe");
-        eprintln!("      --crypto-key-no       Disable XOR encryption");
-        eprintln!("  -d, --dns <dns>           Custom DNS server (default: 223.5.5). Override");
-        eprintln!("                             when the default DNS cannot resolve the domain.");
-        eprintln!("      --flash-time <ts>    Unix timestamp of device flash time (for display only).");
-        eprintln!("  -h, --help                Print this help");
-        eprintln!();
-        eprintln!("EXAMPLE:");
-        eprintln!("    rtragent --server 1.2.3.4:9527 --token mysecret --name my-router --id AA:BB:CC:DD:EE:FF --crypto-key MyKey123");
+        eprintln!("rtragent --server <addr> [-t token] [-n name] [-i id] [--flash-time <ts>]");
         return;
     }
 
@@ -275,9 +255,6 @@ fn main() {
     let flash_time = parse_arg(&args, "--flash-time").unwrap_or_default();
 
     let cipher = XorCipher::new(&crypto_key);
-    if cipher.is_enabled() {
-        eprintln!("[rtragent] XOR encryption enabled");
-    }
 
     let dns_is_custom = dns_server != "223.5.5.5";
     let mut resolver = dns::DnsResolver::new(&dns_server);
@@ -364,7 +341,6 @@ fn run_session(
                 Ok(local) => {
                     let _ = local.set_nodelay(true);
                     let _ = local.set_read_timeout(Some(Duration::from_millis(TICK_MS)));
-                    eprintln!("[rtragent] tunnel {} opened", tid);
                     tunnels.lock().unwrap().insert(
                         tid.clone(),
                         TunnelState { local_stream: local },
@@ -510,7 +486,6 @@ fn run_session(
                         Some("TUN_CLOSE") => {
                             if parts.len() >= 2 {
                                 let tunnel_id = parts[1].to_string();
-                                eprintln!("[rtragent] tunnel {} closed by server", tunnel_id);
                                 tunnels.lock().unwrap().remove(&tunnel_id);
                             }
                         }
