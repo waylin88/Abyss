@@ -660,11 +660,11 @@ async fn handle_agent(
     let wc = cipher_arc.clone();
     let wid = qualified_id.clone();
     let write_task = tokio::spawn(async move {
-        let mut reason = "normal";
+        let mut reason = "normal".to_string();
         while let Some(mut data) = rx.recv().await {
             wc.encrypt(&mut data);
             if writer.write_all(&data).await.is_err() {
-                reason = "socket write error";
+                reason = "socket write error".to_string();
                 break;
             }
             let _ = writer.flush().await;
@@ -681,7 +681,7 @@ async fn handle_agent(
         let mut reader = reader;
         let mut buf: Vec<u8> = Vec::with_capacity(4096);
         let mut tmp = [0u8; 4096];
-        let mut reason = "peer closed";
+        let mut reason = "peer closed".to_string();
 
         let mut ping_sent: Option<Instant> = None;
         let mut next_hb: tokio::time::Instant =
@@ -690,7 +690,7 @@ async fn handle_agent(
         'outer: loop {
             if let Some(sent_at) = ping_sent {
                 if sent_at.elapsed() > Duration::from_secs(60) {
-                    reason = "heartbeat timeout";
+                    reason = "heartbeat timeout".to_string();
                     break 'outer;
                 }
             }
@@ -700,7 +700,7 @@ async fn handle_agent(
                     break pos;
                 }
                 if buf.len() > 65536 {
-                    reason = "buffer too large";
+                    reason = "buffer too large".to_string();
                     break 'outer;
                 }
 
@@ -713,14 +713,14 @@ async fn handle_agent(
                                 buf.extend_from_slice(&tmp[..n]);
                             }
                             Err(e) => {
-                                reason = &format!("read error: {}", e);
+                                reason = format!("read error: {}", e);
                                 break 'outer;
                             }
                         }
                     }
                     _ = tokio::time::sleep_until(next_hb) => {
                         if read_mgr.send_to_agent(&read_agent_id, b"PING\n".to_vec()).await.is_err() {
-                            reason = "send ping err";
+                            reason = "send ping err".to_string();
                             break 'outer;
                         }
                         ping_sent = Some(Instant::now());
@@ -730,7 +730,7 @@ async fn handle_agent(
 
                 if let Some(sent_at) = ping_sent {
                     if sent_at.elapsed() > Duration::from_secs(60) {
-                        reason = "heartbeat timeout";
+                        reason = "heartbeat timeout".to_string();
                         break 'outer;
                     }
                 }
