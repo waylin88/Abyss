@@ -413,9 +413,6 @@ dependencies = [
 [[package]]
 name = "rtragent"
 version = "0.1.0"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "rtrserver"

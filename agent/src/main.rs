@@ -32,25 +32,14 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn hide_args(argv0: &str) {
-    eprintln!("[hide_args] start, argv0='{}'", argv0);
-
     let maps = match std::fs::read_to_string("/proc/self/maps") {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("[hide_args] read maps: {}", e);
-            return;
-        }
+        Err(_) => return,
     };
 
     let marker = argv0.as_bytes();
     if marker.is_empty() {
-        eprintln!("[hide_args] argv0 empty");
         return;
-    }
-
-    eprintln!("[hide_args] full maps:");
-    for line in maps.lines() {
-        eprintln!("  {}", line);
     }
 
     let mut stack_seg: Option<(usize, usize)> = None;
@@ -100,16 +89,9 @@ fn hide_args(argv0: &str) {
     let target = stack_seg.as_ref().or(highest_rwx.as_ref());
     let (seg_start, seg_len) = match target {
         Some(v) => v,
-        None => {
-            eprintln!("[hide_args] no writable segment found");
-            return;
-        }
+        None => return,
     };
     let seg_end = seg_start + seg_len;
-    eprintln!(
-        "[hide_args] target: 0x{:x}-0x{:x} ({} bytes)",
-        seg_start, seg_end, seg_len
-    );
 
     let seg = unsafe { std::slice::from_raw_parts(*seg_start as *const u8, *seg_len) };
 
@@ -117,18 +99,12 @@ fn hide_args(argv0: &str) {
     let mut window_start = window_end.saturating_sub(16384);
 
     loop {
-        eprintln!(
-            "[hide_args] searching window offset {}-{}",
-            window_start, window_end
-        );
         let mut pos = window_start;
-        let mut found = false;
         while pos + marker.len() < window_end {
             if &seg[pos..pos + marker.len()] == marker
                 && pos + marker.len() < seg.len()
                 && seg[pos + marker.len()] == 0
             {
-                eprintln!("[hide_args] candidate at offset {}", pos);
                 let arg_start = *seg_start + pos;
                 let mut total = marker.len() + 1;
                 let mut scan = pos + marker.len() + 1;
@@ -146,18 +122,9 @@ fn hide_args(argv0: &str) {
                     scan += 1;
                 }
                 if arg_start + total > seg_end || total == 0 {
-                    eprintln!(
-                        "[hide_args] reject: 0x{:x}+{} vs 0x{:x}",
-                        arg_start, total, seg_end
-                    );
                     pos += 1;
                     continue;
                 }
-
-                eprintln!(
-                    "[hide_args] found argv at 0x{:x} ({} bytes), wiping",
-                    arg_start, total
-                );
 
                 let argv_slice = unsafe {
                     std::slice::from_raw_parts_mut(arg_start as *mut u8, total)
@@ -169,17 +136,6 @@ fn hide_args(argv0: &str) {
                 let copy_len = name.len().min(argv_slice.len().saturating_sub(1));
                 argv_slice[..copy_len].copy_from_slice(&name[..copy_len]);
                 argv_slice[copy_len] = 0;
-
-                match std::fs::read("/proc/self/cmdline") {
-                    Ok(cmdline) => {
-                        let display: String = cmdline
-                            .iter()
-                            .map(|&b| if b == 0 { ' ' } else { b as char })
-                            .collect();
-                        eprintln!("[hide_args] cmdline now: {}", display.trim());
-                    }
-                    Err(e) => eprintln!("[hide_args] verify: {}", e),
-                }
                 return;
             }
             pos += 1;
@@ -190,7 +146,6 @@ fn hide_args(argv0: &str) {
         window_end = window_start;
         window_start = window_end.saturating_sub(16384);
     }
-    eprintln!("[hide_args] marker '{}' not found", argv0);
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -1033,7 +1033,6 @@ async fn handle_http_proxy(
     domain: &str,
 ) -> anyhow::Result<()> {
     let peer = client.peer_addr().ok();
-    eprintln!("[HTTP proxy] new connection from {:?}", peer);
     let _ = client.set_nodelay(true);
 
     let mut buf = Vec::with_capacity(4096);
@@ -1042,13 +1041,8 @@ async fn handle_http_proxy(
     let header_end = loop {
         let n = client.read(&mut tmp).await?;
         if n == 0 {
-            eprintln!(
-                "[HTTP proxy] {:?} closed connection after {} bytes (no complete headers)",
-                peer, buf.len()
-            );
             anyhow::bail!("connection closed before headers complete");
         }
-        eprintln!("[HTTP proxy] {:?} read {} bytes", peer, n);
         buf.extend_from_slice(&tmp[..n]);
 
         if let Some(pos) = buf
@@ -1064,8 +1058,6 @@ async fn handle_http_proxy(
     };
 
     let header_str = String::from_utf8_lossy(&buf[..header_end]);
-    eprintln!("[HTTP proxy] {:?} FULL HEADERS:\n{}", peer, header_str);
-
     let host = header_str
         .lines()
         .find_map(|line| {
@@ -1077,10 +1069,8 @@ async fn handle_http_proxy(
             }
         })
         .ok_or_else(|| anyhow::anyhow!("missing Host header"))?;
-    eprintln!("[HTTP proxy] {:?} Host header: {:?}", peer, host);
 
     let hostname = host.rsplitn(2, ':').last().unwrap_or(host);
-    eprintln!("[HTTP proxy] {:?} hostname (port stripped): {:?}", peer, hostname);
 
     let agent_id = if domain.is_empty() {
         hostname.to_string()
@@ -1088,20 +1078,11 @@ async fn handle_http_proxy(
         let domain_dot = format!(".{}", domain);
         if hostname.ends_with(&domain_dot) {
             let subdomain = &hostname[..hostname.len() - domain_dot.len()];
-            eprintln!(
-                "[HTTP proxy] {:?} subdomain='{:?}' domain='{:?}'",
-                peer, subdomain, domain
-            );
             subdomain.to_string()
         } else {
-            eprintln!(
-                "[HTTP proxy] {:?} hostname {:?} does not end with {:?}, using as-is",
-                peer, hostname, domain_dot
-            );
             hostname.to_string()
         }
     };
-    eprintln!("[HTTP proxy] {:?} raw agent_id: {:?}", peer, agent_id);
 
     if agent_id.is_empty() {
         anyhow::bail!("empty agent ID from Host: {}", host);
@@ -1115,51 +1096,18 @@ async fn handle_http_proxy(
             _ => c,
         })
         .collect::<String>();
-    eprintln!("[HTTP proxy] {:?} sanitized agent_id: {:?}", peer, agent_id);
 
-    let all_agents = mgr.list().await;
-    eprintln!(
-        "[HTTP proxy] {:?} total registered agents ({}): {:?}",
-        peer,
-        all_agents.len(),
-        all_agents.iter().map(|a| a.id.clone()).collect::<Vec<_>>()
-    );
-
-    let lookup_result = mgr.find_agent_by_id(&agent_id).await;
-    match &lookup_result {
-        Some((token, qual_id, _)) => {
-            eprintln!(
-                "[HTTP proxy] {:?} MATCH: token={:?} qualified_id={:?}",
-                peer, token, qual_id
-            );
-        }
-        None => {
-            eprintln!("[HTTP proxy] {:?} NO MATCH for agent_id={:?}", peer, agent_id);
-        }
-    }
-
-    let (_, found_qualified, _) = lookup_result
+    let (_, found_qualified, _) = mgr
+        .find_agent_by_id(&agent_id)
+        .await
         .ok_or_else(|| anyhow::anyhow!("agent not found: {}", agent_id))?;
 
-    let current_web_agent = {
-        let w = mgr.web_agent.lock().await;
-        w.clone()
-    };
-    eprintln!(
-        "[HTTP proxy] {:?} check_web_agent: found={:?} selected={:?}",
-        peer, found_qualified, current_web_agent
-    );
     if !mgr.check_web_agent(&found_qualified).await {
-        eprintln!(
-            "[HTTP proxy] {:?} DENIED: not the selected web agent",
-            peer
-        );
         anyhow::bail!(
             "agent {} is not the currently selected web agent",
             found_qualified
         );
     }
-    eprintln!("[HTTP proxy] {:?} check_web_agent PASSED", peer);
 
     // ── Create tunnel to agent's port 80 ───────────────────────────
     let tunnel_id = format!("http-{}-{}", found_qualified, std::time::SystemTime::now()
@@ -1167,9 +1115,10 @@ async fn handle_http_proxy(
         .unwrap_or_default()
         .as_micros());
     let local_addr = "127.0.0.1:80".to_string();
-    eprintln!(
-        "[HTTP proxy] {:?} creating tunnel {} → agent port 80",
-        peer, tunnel_id
+
+    println!(
+        "[HTTP proxy] {:?} → agent {}",
+        peer, found_qualified
     );
 
     let (user_reader, user_writer) = client.into_split();
