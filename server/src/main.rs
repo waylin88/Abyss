@@ -28,8 +28,11 @@ struct Cli {
     #[arg(long, default_value = "18080", help = "HTTP proxy auto-routing port. 0 = disabled. Routes requests by Host header to agent's port 80.")]
     http_proxy_port: u16,
 
-    #[arg(long, default_value = "", help = "XOR encryption key for agent communication. Empty = disabled (backward compatible).")]
+    #[arg(long, default_value = "Zzb33cANnGVGdQWe", help = "XOR encryption key for agent communication.")]
     crypto_key: String,
+
+    #[arg(long, default_value_t = false, help = "Disable XOR encryption for agent communication.")]
+    crypto_key_no: bool,
 }
 
 /// Load domain from data/config.json
@@ -84,7 +87,11 @@ async fn main() -> anyhow::Result<()> {
 
     let mgr = manager.clone();
     let addr = cli.agent_addr.clone();
-    let crypto_key = cli.crypto_key.clone();
+    let crypto_key = if cli.crypto_key_no {
+        String::new()
+    } else {
+        cli.crypto_key.clone()
+    };
     tokio::spawn(async move {
         if let Err(e) = agent_manager::run_agent_listener(mgr, &addr, allow, block, crypto_key).await {
             eprintln!("[server] agent listener error: {}", e);

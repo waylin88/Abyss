@@ -30,6 +30,10 @@ fn parse_arg(args: &[String], name: &str) -> Option<String> {
     None
 }
 
+fn has_flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|a| a == name)
+}
+
 #[cfg(target_os = "linux")]
 fn hide_args(argv0: &str) {
     let maps = match std::fs::read_to_string("/proc/self/maps") {
@@ -159,20 +163,21 @@ fn main() {
     if args.len() >= 2 && (args[1] == "-h" || args[1] == "--help") {
         eprintln!("rtragent - lightweight router agent");
         eprintln!();
-        eprintln!("USAGE: rtragent --server <addr> [--token <token>] [--name <name>] [--id <id>] [--crypto-key <key>]");
+        eprintln!("USAGE: rtragent --server <addr> [--token <token>] [--name <name>] [--id <id>] [--crypto-key <key>] [--crypto-key-no]");
         eprintln!();
         eprintln!("OPTIONS:");
-        eprintln!("  -s, --server <addr>     Server address (default: dome.y-lin.wang:46293)");
-        eprintln!("  -t, --token <token>     Auth token (optional)");
-        eprintln!("  -n, --name <name>       Agent display name (default: router)");
-        eprintln!("  -i, --id <id>           Unique device ID. Server uses it to");
-        eprintln!("                           identify this agent across reconnections.");
-        eprintln!("                           If not set, server generates one.");
-        eprintln!("  -k, --crypto-key <key>  XOR encryption key (must match server).");
-        eprintln!("                           Empty = disabled (default).");
-        eprintln!("  -d, --dns <dns>         Custom DNS server (default: 223.5.5.5). Override");
-        eprintln!("                           when the default DNS cannot resolve the domain.");
-        eprintln!("  -h, --help              Print this help");
+        eprintln!("  -s, --server <addr>       Server address (default: dome.y-lin.wang:46293)");
+        eprintln!("  -t, --token <token>       Auth token (optional)");
+        eprintln!("  -n, --name <name>         Agent display name (default: router)");
+        eprintln!("  -i, --id <id>             Unique device ID. Server uses it to");
+        eprintln!("                             identify this agent across reconnections.");
+        eprintln!("                             If not set, server generates one.");
+        eprintln!("  -k, --crypto-key <key>    XOR encryption key (must match server).");
+        eprintln!("                             Default: Zzb33cANnGVGdQWe");
+        eprintln!("      --crypto-key-no       Disable XOR encryption");
+        eprintln!("  -d, --dns <dns>           Custom DNS server (default: 223.5.5.5). Override");
+        eprintln!("                             when the default DNS cannot resolve the domain.");
+        eprintln!("  -h, --help                Print this help");
         eprintln!();
         eprintln!("EXAMPLE:");
         eprintln!("    rtragent --server 1.2.3.4:9527 --token mysecret --name my-router --id AA:BB:CC:DD:EE:FF --crypto-key MyKey123");
@@ -191,9 +196,13 @@ fn main() {
     let id = parse_arg(&args, "--id")
         .or_else(|| parse_arg(&args, "-i"))
         .unwrap_or_default();
-    let crypto_key = parse_arg(&args, "--crypto-key")
-        .or_else(|| parse_arg(&args, "-k"))
-        .unwrap_or_default();
+    let crypto_key = if has_flag(&args, "--crypto-key-no") {
+        String::new()
+    } else {
+        parse_arg(&args, "--crypto-key")
+            .or_else(|| parse_arg(&args, "-k"))
+            .unwrap_or_else(|| "Zzb33cANnGVGdQWe".to_string())
+    };
     let dns_server = parse_arg(&args, "--dns")
         .or_else(|| parse_arg(&args, "-d"))
         .unwrap_or_else(|| "223.5.5.5".to_string());
