@@ -521,9 +521,26 @@ function renderDetail(agent) {
     ? `${agent.addr}<span style="color:#8b949e;font-weight:normal"> (${agent.ip_location})</span>`
     : agent.addr;
 
+  // Flash time display — parse Unix timestamp to Beijing time
+  let flashDisplay = '<span class="dvalue" style="color:#8b949e">未知</span>';
+  if (agent.flash_time) {
+    const ts = parseInt(agent.flash_time, 10);
+    if (!isNaN(ts)) {
+      const d = new Date((ts + 8 * 3600) * 1000);
+      const Y = d.getUTCFullYear();
+      const M = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const D = String(d.getUTCDate()).padStart(2, '0');
+      const h = String(d.getUTCHours()).padStart(2, '0');
+      const m = String(d.getUTCMinutes()).padStart(2, '0');
+      const s = String(d.getUTCSeconds()).padStart(2, '0');
+      flashDisplay = `<span class="dvalue">${Y}-${M}-${D} ${h}:${m}:${s}</span>`;
+    }
+  }
+
   // Row 1: 名称、ID、状态
   // Row 2: IP + IP归属地
-  // Row 3: 上线时间、时长、离线时间
+  // Row 3: 刷机时间
+  // Row 4: 上线时间、时长、离线时间
   const rows = [
     // Row 1
     `<div class="dhoriz-item"><span class="dlabel">名称</span><span class="dvalue">${agent.name}</span></div>
@@ -532,6 +549,8 @@ function renderDetail(agent) {
     // Row 2
     `<div class="dhoriz-item" style="border-right:none"><span class="dlabel">IP</span><span class="dvalue">${ipDisplay}</span></div>`,
     // Row 3
+    `<div class="dhoriz-item" style="border-right:none"><span class="dlabel">刷机时间</span>${flashDisplay}</div>`,
+    // Row 4
     `<div class="dhoriz-item"><span class="dlabel">上线时间</span><span class="dvalue">${agent.online ? fmtTime(agent.connected_at) : '-'}</span></div>
      <div class="dhoriz-item"><span class="dlabel">在线时长</span><span class="dvalue">${agent.online ? fmtUptime(agent.uptime_secs) : '-'}</span></div>
      <div class="dhoriz-item"><span class="dlabel">离线时间</span><span class="dvalue">${agent.online ? '-' : fmtLastSeen(agent.last_seen)}</span></div>`,

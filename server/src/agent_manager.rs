@@ -58,6 +58,7 @@ pub struct AgentHandle {
     pub tx: mpsc::Sender<Vec<u8>>,
     pub ip_location: String,
     pub generation: u64,
+    pub flash_time: String,
 }
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -213,6 +214,7 @@ impl AgentManager {
                         .as_secs()
                         - v.connected_at.elapsed().as_secs(),
                     ip_location: v.ip_location.clone(),
+                    flash_time: v.flash_time.clone(),
                 });
             }
         }
@@ -428,6 +430,7 @@ impl AgentManager {
                         tx: v.tx.clone(),
                         ip_location: v.ip_location.clone(),
                         generation: v.generation,
+                        flash_time: v.flash_time.clone(),
                     }));
                 }
             }
@@ -478,6 +481,8 @@ pub struct AgentInfo {
     pub connected_at: u64,
     /// IP geolocation string (e.g., "中国 广东省 深圳市 电信")
     pub ip_location: String,
+    /// Flash time timestamp string from HELLO (empty if not provided)
+    pub flash_time: String,
 }
 
 async fn read_line(stream: &mut TcpStream, buf: &mut Vec<u8>, cipher: Option<&XorCipher>) -> anyhow::Result<String> {
@@ -600,7 +605,7 @@ async fn handle_agent(
     .await
     .map_err(|_| anyhow::anyhow!("handshake timeout"))??;
 
-    let parts: Vec<&str> = line.trim().splitn(4, ' ').collect();
+    let parts: Vec<&str> = line.trim().splitn(5, ' ').collect();
     if parts.len() < 2 || parts[0] != "HELLO" {
         if manager.record_handshake_failure(&peer_ip).await {
             manager.ban_ip(&peer_ip).await;
@@ -615,10 +620,18 @@ async fn handle_agent(
     }
     let name = parts[1].to_string();
 
-    let (agent_id, provided_token) = if parts.len() >= 4 {
-        (parts[2].to_string(), parts[3])
+    let last_is_ts = parts.len() >= 4 && parts[parts.len() - 1].chars().all(|c| c.is_ascii_digit());
+
+    let (data_parts, flash_time) = if last_is_ts {
+        (&parts[..parts.len() - 1], parts[parts.len() - 1].to_string())
     } else {
-        (name.clone(), if parts.len() > 2 { parts[2] } else { "" })
+        (parts.as_slice(), String::new())
+    };
+
+    let (agent_id, provided_token) = if data_parts.len() >= 4 {
+        (data_parts[2].to_string(), data_parts[3])
+    } else {
+        (name.clone(), if data_parts.len() > 2 { data_parts[2] } else { "" })
     };
 
     // ---- Token allow / block list check ----
@@ -681,6 +694,7 @@ async fn handle_agent(
                 tx,
                 ip_location,
                 generation,
+                flash_time: flash_time.clone(),
             },
         )
         .await;
@@ -896,6 +910,7 @@ async fn handle_agent(
             last_seen,
             connected_at: 0,
             ip_location: String::new(),
+            flash_time: flash_time.clone(),
         })
         .await;
 

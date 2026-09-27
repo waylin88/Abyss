@@ -240,8 +240,9 @@ fn main() {
         eprintln!("  -k, --crypto-key <key>    XOR encryption key (must match server).");
         eprintln!("                             Default: Zzb33cANnGVGdQWe");
         eprintln!("      --crypto-key-no       Disable XOR encryption");
-        eprintln!("  -d, --dns <dns>           Custom DNS server (default: 223.5.5.5). Override");
+        eprintln!("  -d, --dns <dns>           Custom DNS server (default: 223.5.5). Override");
         eprintln!("                             when the default DNS cannot resolve the domain.");
+        eprintln!("      --flash-time <ts>    Unix timestamp of device flash time (for display only).");
         eprintln!("  -h, --help                Print this help");
         eprintln!();
         eprintln!("EXAMPLE:");
@@ -254,7 +255,7 @@ fn main() {
         .unwrap_or_else(|| "dome.y-lin.wang:46293".to_string());
     let token = parse_arg(&args, "--token")
         .or_else(|| parse_arg(&args, "-t"))
-        .unwrap_or_default();
+        .unwrap_or_else(|| "unauthorized".to_string());
     let name = parse_arg(&args, "--name")
         .or_else(|| parse_arg(&args, "-n"))
         .unwrap_or_else(auto_name);
@@ -271,6 +272,7 @@ fn main() {
     let dns_server = parse_arg(&args, "--dns")
         .or_else(|| parse_arg(&args, "-d"))
         .unwrap_or_else(|| "223.5.5.5".to_string());
+    let flash_time = parse_arg(&args, "--flash-time").unwrap_or_default();
 
     let cipher = XorCipher::new(&crypto_key);
     if cipher.is_enabled() {
@@ -309,10 +311,11 @@ fn main() {
                 set_tcp_keepalive(&stream);
 
                 let mut s = stream;
-                let hello = if id.is_empty() {
-                    format!("HELLO {} {}\n", name, token)
-                } else {
-                    format!("HELLO {} {} {}\n", name, id, token)
+                let hello = match (id.is_empty(), flash_time.is_empty()) {
+                    (true, true) => format!("HELLO {} {}\n", name, token),
+                    (true, false) => format!("HELLO {} {} {}\n", name, token, flash_time),
+                    (false, true) => format!("HELLO {} {} {}\n", name, id, token),
+                    (false, false) => format!("HELLO {} {} {} {}\n", name, id, token, flash_time),
                 };
                 let mut hello_bytes = hello.into_bytes();
                 cipher.encrypt(&mut hello_bytes);
