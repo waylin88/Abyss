@@ -185,26 +185,10 @@ fn set_tcp_keepalive(stream: &std::net::TcpStream) {
 fn set_tcp_keepalive(_stream: &std::net::TcpStream) {}
 
 #[cfg(target_os = "linux")]
-fn run_cmd(cmd: &str) -> String {
-    match Command::new("sh").args(["-c", cmd]).output() {
-        Ok(o) => {
-            let mut out = String::new();
-            out.push_str(&String::from_utf8_lossy(&o.stdout));
-            out.push_str(&String::from_utf8_lossy(&o.stderr));
-            out
-        }
-        Err(e) => {
-            eprintln!("[rtragent] sh -c {:?} failed: {}", cmd, e);
-            String::new()
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
 fn auto_name() -> String {
-    let raw = run_cmd("nvram get productid");
-    eprintln!("[rtragent] nvram productid raw={:?}", raw);
-    let trimmed = raw.trim().to_string();
+    let (_code, out) = run_cmd("nvram get productid");
+    eprintln!("[rtragent] nvram productid raw={:?}", out);
+    let trimmed = out.trim().to_string();
     if !trimmed.is_empty() {
         return trimmed;
     }
@@ -220,7 +204,7 @@ fn auto_name() -> String {
 
 #[cfg(target_os = "linux")]
 fn auto_id() -> String {
-    let raw = run_cmd("lan_eeprom_mac");
+    let (_code, raw) = run_cmd("lan_eeprom_mac");
     eprintln!("[rtragent] lan_eeprom_mac raw={:?}", raw);
 
     for line in raw.lines() {
