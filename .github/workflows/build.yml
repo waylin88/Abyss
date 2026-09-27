@@ -5,9 +5,16 @@ on:
     branches: [master, main]
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      targets:
+        description: '要编译的目标（逗号分隔），留空编译全部。可用值：abyss-server-x86_64, abyss-server-aarch64, abyss-mips, abyss-mipsel, abyss-armv7, abyss-x86_64, abyss-aarch64'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   build:
+    if: inputs.targets == '' || contains(format(',{0},', inputs.targets), format(',{0},', matrix.job_name))
     name: ${{ matrix.job_name }}
     runs-on: ubuntu-latest
     strategy:
