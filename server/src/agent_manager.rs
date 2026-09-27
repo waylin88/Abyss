@@ -57,7 +57,10 @@ pub struct AgentHandle {
     pub connected_at: std::time::Instant,
     pub tx: mpsc::Sender<Vec<u8>>,
     pub ip_location: String,
+    pub generation: u64,
 }
+
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub struct TunnelHandle {
     pub agent_id: String,
@@ -381,12 +384,16 @@ impl AgentManager {
         group.insert(id, handle);
     }
 
-    pub async fn unregister(&self, token: &str, id: &str) {
+    pub async fn unregister(&self, token: &str, id: &str, my_generation: u64) {
         let mut agents = self.agents.lock().await;
         if let Some(group) = agents.get_mut(token) {
-            group.remove(id);
-            if group.is_empty() {
-                agents.remove(token);
+            if let Some(existing) = group.get(id) {
+                if existing.generation == my_generation {
+                    group.remove(id);
+                    if group.is_empty() {
+                        agents.remove(token);
+                    }
+                }
             }
         }
     }
@@ -419,6 +426,7 @@ impl AgentManager {
                         connected_at: v.connected_at,
                         tx: v.tx.clone(),
                         ip_location: v.ip_location.clone(),
+                        generation: v.generation,
                     }));
                 }
             }
@@ -637,6 +645,7 @@ async fn handle_agent(
 
     let (reader, mut writer) = socket.into_split();
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(256);
+    let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
 
     // Look up IP geolocation
     let ip_location = manager.ip_lookup.lookup(&peer.ip().to_string()).unwrap_or_default();
@@ -651,6 +660,7 @@ async fn handle_agent(
                 connected_at: std::time::Instant::now(),
                 tx,
                 ip_location,
+                generation,
             },
         )
         .await;
@@ -856,7 +866,7 @@ async fn handle_agent(
         .await;
 
     // Cleanup on disconnect
-    manager.unregister(&read_token, &qualified_id).await;
+    manager.unregister(&read_token, &qualified_id, generation).await;
     let mut tunnels = manager.tunnels.lock().await;
     tunnels.retain(|_, t| t.agent_id != qualified_id);
     drop(tunnels);
