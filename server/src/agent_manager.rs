@@ -1032,20 +1032,25 @@ async fn handle_http_proxy(
     mut client: TcpStream,
     domain: &str,
 ) -> anyhow::Result<()> {
+    let peer = client.peer_addr().ok();
+    eprintln!("[HTTP proxy] new connection from {:?}", peer);
     let _ = client.set_nodelay(true);
 
-    // ── Read HTTP request headers (up to \r\n\r\n) ────────────────
     let mut buf = Vec::with_capacity(4096);
     let mut tmp = [0u8; 1024];
 
     let header_end = loop {
         let n = client.read(&mut tmp).await?;
         if n == 0 {
+            eprintln!(
+                "[HTTP proxy] {:?} closed connection after {} bytes (no complete headers)",
+                peer, buf.len()
+            );
             anyhow::bail!("connection closed before headers complete");
         }
+        eprintln!("[HTTP proxy] {:?} read {} bytes", peer, n);
         buf.extend_from_slice(&tmp[..n]);
 
-        // Check for end of headers (\r\n\r\n)
         if let Some(pos) = buf
             .windows(4)
             .position(|w| w == b"\r\n\r\n")
@@ -1053,14 +1058,14 @@ async fn handle_http_proxy(
             break pos + 4;
         }
 
-        // Limit header size to 64KB
         if buf.len() > 65536 {
             anyhow::bail!("request headers too large");
         }
     };
 
-    // ── Parse Host header ──────────────────────────────────────────
     let header_str = String::from_utf8_lossy(&buf[..header_end]);
+    eprintln!("[HTTP proxy] {:?} FULL HEADERS:\n{}", peer, header_str);
+
     let host = header_str
         .lines()
         .find_map(|line| {
@@ -1072,29 +1077,31 @@ async fn handle_http_proxy(
             }
         })
         .ok_or_else(|| anyhow::anyhow!("missing Host header"))?;
+    eprintln!("[HTTP proxy] {:?} Host header: {:?}", peer, host);
 
-    // Strip port from Host (e.g., "myrouter.dome.com:8080" -> "myrouter.dome.com")
     let hostname = host.rsplitn(2, ':').last().unwrap_or(host);
+    eprintln!("[HTTP proxy] {:?} hostname (port stripped): {:?}", peer, hostname);
 
-    // Extract agent ID from subdomain
     let agent_id = if domain.is_empty() {
-        // No domain configured — use entire hostname as the agent ID.
-        // The hostname may contain dots from the token/ID (e.g. "v1.2_66779"),
-        // so we must not split on '.' here.
         hostname.to_string()
     } else {
-        // Strip domain suffix to get the full subdomain prefix.
         let domain_dot = format!(".{}", domain);
         if hostname.ends_with(&domain_dot) {
             let subdomain = &hostname[..hostname.len() - domain_dot.len()];
-            // Use the ENTIRE subdomain — it may contain dots from the agent ID
-            // (e.g., "v1.2_66779" where token is "v1.2").
+            eprintln!(
+                "[HTTP proxy] {:?} subdomain='{:?}' domain='{:?}'",
+                peer, subdomain, domain
+            );
             subdomain.to_string()
         } else {
-            // Domain doesn't match — fallback: use entire hostname
+            eprintln!(
+                "[HTTP proxy] {:?} hostname {:?} does not end with {:?}, using as-is",
+                peer, hostname, domain_dot
+            );
             hostname.to_string()
         }
     };
+    eprintln!("[HTTP proxy] {:?} raw agent_id: {:?}", peer, agent_id);
 
     if agent_id.is_empty() {
         anyhow::bail!("empty agent ID from Host: {}", host);
@@ -1108,11 +1115,30 @@ async fn handle_http_proxy(
             _ => c,
         })
         .collect::<String>();
+    eprintln!("[HTTP proxy] {:?} sanitized agent_id: {:?}", peer, agent_id);
 
-    // ── Look up agent ──────────────────────────────────────────────
-    let (_, found_qualified, _) = mgr
-        .find_agent_by_id(&agent_id)
-        .await
+    let all_agents = mgr.list().await;
+    eprintln!(
+        "[HTTP proxy] {:?} total registered agents ({}): {:?}",
+        peer,
+        all_agents.len(),
+        all_agents.iter().map(|a| a.id.clone()).collect::<Vec<_>>()
+    );
+
+    let lookup_result = mgr.find_agent_by_id(&agent_id).await;
+    match &lookup_result {
+        Some((token, qual_id, _)) => {
+            eprintln!(
+                "[HTTP proxy] {:?} MATCH: token={:?} qualified_id={:?}",
+                peer, token, qual_id
+            );
+        }
+        None => {
+            eprintln!("[HTTP proxy] {:?} NO MATCH for agent_id={:?}", peer, agent_id);
+        }
+    }
+
+    let (_, found_qualified, _) = lookup_result
         .ok_or_else(|| anyhow::anyhow!("agent not found: {}", agent_id))?;
 
     // ── Check web agent restriction ───────────────────────────────
