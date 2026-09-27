@@ -1141,15 +1141,25 @@ async fn handle_http_proxy(
     let (_, found_qualified, _) = lookup_result
         .ok_or_else(|| anyhow::anyhow!("agent not found: {}", agent_id))?;
 
-    // ── Check web agent restriction ───────────────────────────────
-    // Only the currently selected agent's web UI is accessible.
-    // Use the qualified ID (with colon) for comparison.
+    let current_web_agent = {
+        let w = mgr.web_agent.lock().await;
+        w.clone()
+    };
+    eprintln!(
+        "[HTTP proxy] {:?} check_web_agent: found={:?} selected={:?}",
+        peer, found_qualified, current_web_agent
+    );
     if !mgr.check_web_agent(&found_qualified).await {
+        eprintln!(
+            "[HTTP proxy] {:?} DENIED: not the selected web agent",
+            peer
+        );
         anyhow::bail!(
             "agent {} is not the currently selected web agent",
             found_qualified
         );
     }
+    eprintln!("[HTTP proxy] {:?} check_web_agent PASSED", peer);
 
     // ── Create tunnel to agent's port 80 ───────────────────────────
     let tunnel_id = format!("http-{}-{}", found_qualified, std::time::SystemTime::now()
@@ -1157,6 +1167,10 @@ async fn handle_http_proxy(
         .unwrap_or_default()
         .as_micros());
     let local_addr = "127.0.0.1:80".to_string();
+    eprintln!(
+        "[HTTP proxy] {:?} creating tunnel {} → agent port 80",
+        peer, tunnel_id
+    );
 
     let (user_reader, user_writer) = client.into_split();
 
