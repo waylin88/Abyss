@@ -13,54 +13,48 @@ on:
         type: string
 
 jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.filter.outputs.matrix }}
+    steps:
+      - id: filter
+        run: |
+          ALL='[
+            {"job_name":"abyss-server-x86_64","binary":"abyss-server","target":"x86_64-unknown-linux-musl","builder":"cargo"},
+            {"job_name":"abyss-server-aarch64","binary":"abyss-server","target":"aarch64-unknown-linux-gnu","builder":"cross"},
+            {"job_name":"abyss-mips","binary":"abyss","target":"mips-unknown-linux-musl","builder":"musl","musl_uri":"mips-linux-muslsf-cross","musl_url":"mips-linux-muslsf","use_nightly":true},
+            {"job_name":"abyss-mipsel","binary":"abyss","target":"mipsel-unknown-linux-musl","builder":"musl","musl_uri":"mipsel-linux-muslsf-cross","musl_url":"mipsel-linux-muslsf","use_nightly":true},
+            {"job_name":"abyss-armv7","binary":"abyss","target":"armv7-unknown-linux-musleabihf","builder":"musl","musl_uri":"armv7l-linux-musleabihf-cross","musl_url":"armv7l-linux-musleabihf","use_nightly":false},
+            {"job_name":"abyss-x86_64","binary":"abyss","target":"x86_64-unknown-linux-musl","builder":"cargo"},
+            {"job_name":"abyss-aarch64","binary":"abyss","target":"aarch64-unknown-linux-gnu","builder":"cross"}
+          ]'
+
+          TARGETS="${{ inputs.targets }}"
+          if [ -z "$TARGETS" ]; then
+            RESULT="$ALL"
+          else
+            RESULT=$(echo "$ALL" | python3 -c "
+              import sys, json
+              all_items = json.load(sys.stdin)
+              wanted = set(t.strip() for t in '${{ inputs.targets }}'.split(',') if t.strip())
+              filtered = [item for item in all_items if item['job_name'] in wanted]
+              print(json.dumps(filtered))
+            ")
+          fi
+
+          echo "matrix=$RESULT" >> "$GITHUB_OUTPUT"
+          echo "Filtered matrix:"
+          echo "$RESULT" | python3 -m json.tool
+
   build:
-    if: inputs.targets == '' || contains(format(',{0},', inputs.targets), format(',{0},', matrix.job_name))
+    needs: generate-matrix
     name: ${{ matrix.job_name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - job_name: abyss-server-x86_64
-            binary: abyss-server
-            target: x86_64-unknown-linux-musl
-            builder: cargo
-          - job_name: abyss-server-aarch64
-            binary: abyss-server
-            target: aarch64-unknown-linux-gnu
-            builder: cross
-
-          # --- musl targets (参考 vnt-dev/vnt 方案) ---
-          - job_name: abyss-mips
-            binary: abyss
-            target: mips-unknown-linux-musl
-            builder: musl
-            musl_uri: mips-linux-muslsf-cross
-            musl_url: mips-linux-muslsf
-            use_nightly: true
-          - job_name: abyss-mipsel
-            binary: abyss
-            target: mipsel-unknown-linux-musl
-            builder: musl
-            musl_uri: mipsel-linux-muslsf-cross
-            musl_url: mipsel-linux-muslsf
-            use_nightly: true
-          - job_name: abyss-armv7
-            binary: abyss
-            target: armv7-unknown-linux-musleabihf
-            builder: musl
-            musl_uri: armv7l-linux-musleabihf-cross
-            musl_url: armv7l-linux-musleabihf
-            use_nightly: false
-
-          - job_name: abyss-x86_64
-            binary: abyss
-            target: x86_64-unknown-linux-musl
-            builder: cargo
-          - job_name: abyss-aarch64
-            binary: abyss
-            target: aarch64-unknown-linux-gnu
-            builder: cross
+        include: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
 
     steps:
       - name: Checkout
