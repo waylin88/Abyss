@@ -187,44 +187,36 @@ fn set_tcp_keepalive(_stream: &std::net::TcpStream) {}
 #[cfg(target_os = "linux")]
 fn auto_name() -> String {
     let (_code, out) = run_cmd("nvram get productid");
-    eprintln!("[rtragent] nvram productid raw={:?}", out);
     let trimmed = out.trim().to_string();
     if !trimmed.is_empty() {
         return trimmed;
     }
-    eprintln!("[rtragent] auto_name fallback: router");
     "router".to_string()
 }
 
 #[cfg(not(target_os = "linux"))]
 fn auto_name() -> String {
-    eprintln!("[rtragent] auto_name() called (non-linux build, fallback router)");
     "router".to_string()
 }
 
 #[cfg(target_os = "linux")]
 fn auto_id() -> String {
     let (_code, raw) = run_cmd("lan_eeprom_mac");
-    eprintln!("[rtragent] lan_eeprom_mac raw={:?}", raw);
 
     for line in raw.lines() {
         for word in line.split(|c: char| !c.is_ascii_hexdigit() && c != ':') {
             let colons: Vec<&str> = word.split(':').filter(|s| !s.is_empty()).collect();
             if colons.len() == 6 && colons.iter().all(|s| s.len() == 2) {
-                let mac = colons.join("").to_lowercase();
-                eprintln!("[rtragent] auto_id from MAC: {}", mac);
-                return mac;
+                return colons.join("").to_lowercase();
             }
         }
     }
 
-    eprintln!("[rtragent] auto_id fallback: empty");
     String::new()
 }
 
 #[cfg(not(target_os = "linux"))]
 fn auto_id() -> String {
-    eprintln!("[rtragent] auto_id() called (non-linux build, fallback empty)");
     String::new()
 }
 

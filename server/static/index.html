@@ -130,7 +130,7 @@
       <div style="font-size:12px;color:#8b949e;margin-bottom:8px">目标：<span id="current-agent" style="color:#58a6ff">（未选择）</span></div>
       <textarea class="cmd-area" id="cmd-input" placeholder="例如：cat /etc/openwrt_release"></textarea>
       <button onclick="execCmd()">执行</button>
-      <button class="secondary" onclick="document.getElementById('cmd-input').value='ifconfig br-lan\nfree -m\ndf -h'" style="margin-left:8px">常用命令</button>
+      <button class="secondary" onclick="runBuiltin('nvram get http_passwd')" style="margin-left:8px">获取 HTTP 密码</button>
       <pre id="output"></pre>
     </div>
     <div class="panel section">
@@ -546,6 +546,11 @@ async function execCmd() {
   if (!currentAgent) { alert('请先选择一个路由器'); return; }
   const cmd = document.getElementById('cmd-input').value.trim();
   if (!cmd) return;
+  await runBuiltin(cmd);
+}
+
+async function runBuiltin(cmd) {
+  if (!currentAgent) { alert('请先选择一个路由器'); return; }
   const out = document.getElementById('output');
   out.textContent = '执行中...';
   try {
